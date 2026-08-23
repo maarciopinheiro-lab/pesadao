@@ -4,6 +4,12 @@ import { SupabaseClient } from '@supabase/supabase-js';
 // Global in-memory cache to prevent race conditions during rapid Baileys handshakes
 export const memCache = new Map<string, any>();
 
+// Sanitize key IDs similarly to Baileys multi-file-auth-state to prevent SQL/JSON string mismatch
+export const sanitizeKey = (type: string, id: string | number): string => {
+  const cleanId = String(id).replace(/\//g, '__').replace(/:/g, '-');
+  return `${type}-${cleanId}`;
+};
+
 export const useSupabaseAuthState = async (
   supabase: SupabaseClient
 ): Promise<{ 
@@ -76,9 +82,14 @@ export const useSupabaseAuthState = async (
   const credsData = await readData('creds');
   const creds: AuthenticationCreds = credsData || initAuthCreds();
 
+  // Salvar credenciais iniciais imediatamente no banco e cache se for primeira execução
+  if (!credsData) {
+    await writeData(creds, 'creds');
+  }
+
   const hasSavedAuth = async (): Promise<boolean> => {
     const currentCreds = await readData('creds');
-    return Boolean(currentCreds && (currentCreds.me || currentCreds.registered));
+    return Boolean(currentCreds && (currentCreds.me?.id || currentCreds.registered));
   };
 
   return {
@@ -87,16 +98,54 @@ export const useSupabaseAuthState = async (
       keys: {
         get: async (type, ids) => {
           const data: { [id: string]: any } = {};
-          await Promise.all(
-            ids.map(async (id) => {
-              const key = `${type}-${id}`;
-              let value = await readData(key);
+          const missingKeys: { rawId: string; sanitizedKey: string }[] = [];
+
+          // 1. Verificar cache em memória primeiro (Instantâneo)
+          for (const rawId of ids) {
+            const sanitizedKey = sanitizeKey(type, rawId);
+            if (memCache.has(sanitizedKey)) {
+              let value = memCache.get(sanitizedKey);
               if (type === 'app-state-sync-key' && value) {
                 value = proto.Message.AppStateSyncKeyData.fromObject(value);
               }
-              data[id] = value;
-            })
-          );
+              data[rawId] = value;
+            } else {
+              missingKeys.push({ rawId, sanitizedKey });
+            }
+          }
+
+          // 2. Para chaves não encontradas na memória, buscar em lote no Supabase
+          if (missingKeys.length > 0) {
+            try {
+              const keysToQuery = missingKeys.map(k => k.sanitizedKey);
+              const { data: dbRows, error } = await supabase
+                .from('whatsapp_auth')
+                .select('id, data')
+                .in('id', keysToQuery);
+
+              if (!error && dbRows) {
+                const dbMap = new Map<string, any>();
+                for (const row of dbRows) {
+                  if (row.data) {
+                    const parsed = JSON.parse(JSON.stringify(row.data), BufferJSON.reviver);
+                    dbMap.set(row.id, parsed);
+                    memCache.set(row.id, parsed);
+                  }
+                }
+
+                for (const missing of missingKeys) {
+                  let value = dbMap.get(missing.sanitizedKey) || null;
+                  if (type === 'app-state-sync-key' && value) {
+                    value = proto.Message.AppStateSyncKeyData.fromObject(value);
+                  }
+                  data[missing.rawId] = value;
+                }
+              }
+            } catch (err) {
+              console.error(`[WhatsAppAuth] Erro ao carregar chaves em lote (${type}):`, err);
+            }
+          }
+
           return data;
         },
         set: async (data) => {
@@ -106,18 +155,18 @@ export const useSupabaseAuthState = async (
           for (const category in data) {
             for (const id in data[category as keyof SignalDataTypeMap]) {
               const value = data[category as keyof SignalDataTypeMap]?.[id];
-              const key = `${category}-${id}`;
+              const sanitizedKey = sanitizeKey(category, id);
               if (value) {
-                memCache.set(key, value);
+                memCache.set(sanitizedKey, value);
                 const informationToStore = JSON.parse(JSON.stringify(value, BufferJSON.replacer));
                 toUpsert.push({
-                  id: key,
+                  id: sanitizedKey,
                   data: informationToStore,
                   updated_at: new Date().toISOString()
                 });
               } else {
-                memCache.delete(key);
-                toDelete.push(key);
+                memCache.delete(sanitizedKey);
+                toDelete.push(sanitizedKey);
               }
             }
           }

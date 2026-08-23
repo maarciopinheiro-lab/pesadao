@@ -204,6 +204,8 @@ class WhatsAppService {
           } else if (isRestartRequired) {
             console.log('[WhatsAppService] WhatsApp solicitou reinício (515/RestartRequired após pareamento). Reconectando com nova credencial...');
             this.status = 'connecting';
+            this.qrCodeDataUrl = null;
+            this.rawQr = null;
             await updateWhatsAppSessionInDb(this.getSessionInfo());
             setTimeout(() => {
               this.connect();
@@ -330,22 +332,30 @@ class WhatsAppService {
       throw new Error('WhatsApp não está conectado no momento. Por favor, verifique a conexão e o QR Code.');
     }
 
-    try {
-      const groupsData = await this.sock.groupFetchAllParticipating();
-      const groupsList: WhatsAppGroup[] = Object.values(groupsData).map((g) => ({
-        id: g.id,
-        name: g.subject || 'Grupo sem nome',
-        participantsCount: g.participants?.length || 0,
-        desc: g.desc ? g.desc.toString() : undefined,
-      }));
+    let attempts = 0;
+    while (attempts < 3) {
+      try {
+        attempts++;
+        const groupsData = await this.sock.groupFetchAllParticipating();
+        const groupsList: WhatsAppGroup[] = Object.values(groupsData).map((g: any) => ({
+          id: g.id,
+          name: g.subject || 'Grupo sem nome',
+          participantsCount: g.participants?.length || 0,
+          desc: g.desc ? g.desc.toString() : undefined,
+        }));
 
-      // Ordenar alfabeticamente
-      groupsList.sort((a, b) => a.name.localeCompare(b.name));
-      return groupsList;
-    } catch (err: any) {
-      console.error('[WhatsAppService] Erro ao buscar grupos:', err);
-      throw new Error(`Falha ao carregar lista de grupos: ${err.message}`);
+        // Ordenar alfabeticamente
+        groupsList.sort((a, b) => a.name.localeCompare(b.name));
+        return groupsList;
+      } catch (err: any) {
+        console.warn(`[WhatsAppService] Tentativa ${attempts} de buscar grupos falhou:`, err?.message || err);
+        if (attempts >= 3) {
+          throw new Error(`Falha ao carregar lista de grupos: ${err?.message || err}`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+      }
     }
+    return [];
   }
 
   public async generateFormattedMessage(
