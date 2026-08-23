@@ -708,13 +708,15 @@ const App: React.FC = () => {
     setIsMatchShareModalOpen(true);
     setMatchShareFeedback(null);
     try {
-      const [c, prev] = await Promise.all([
-        getWhatsAppConfig().catch(() => null),
-        previewMatchWhatsAppMessage(matchObj).catch(() => ({ preview: '' })),
-      ]);
+      // 1. Obter a configuração mais atualizada (backend / Supabase / cache local)
+      const c = await getWhatsAppConfig().catch(() => null);
       if (c) {
         setMatchShareTargetGroup(c.matchGroupName || c.groupName || '');
       }
+      const templateToUse = c?.matchMessageTemplate || undefined;
+
+      // 2. Gerar a mensagem sincronizada com o template e a lista de jogadores do elenco
+      const prev = await previewMatchWhatsAppMessage(matchObj, templateToUse, players);
       setMatchShareText(prev.preview || '');
     } catch (e) {
       console.warn('Erro ao carregar prévia da mensagem:', e);

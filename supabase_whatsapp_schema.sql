@@ -48,6 +48,13 @@ Fala, guerreiros! Passando para lembrar da contribuição da semana ({semana}).
 Quem já realizou o pagamento via PIX, favor enviar o comprovante ou desconsiderar esta mensagem. Valeu! ⚽🔥', 'general', '', 'chave', 40.00)
 ON CONFLICT (id) DO NOTHING;
 
+-- 1.1 COLUNAS ADICIONAIS PARA CONFIGURAÇÃO DE JOGOS E MÚLTIPLOS DISPAROS
+ALTER TABLE public.whatsapp_config ADD COLUMN IF NOT EXISTS match_group_id TEXT DEFAULT '';
+ALTER TABLE public.whatsapp_config ADD COLUMN IF NOT EXISTS match_group_name TEXT DEFAULT '';
+ALTER TABLE public.whatsapp_config ADD COLUMN IF NOT EXISTS match_template TEXT;
+ALTER TABLE public.whatsapp_config ADD COLUMN IF NOT EXISTS match_auto_send BOOLEAN DEFAULT FALSE;
+ALTER TABLE public.whatsapp_config ADD COLUMN IF NOT EXISTS billing_schedules TEXT;
+
 -- 2. TABELA DE SESSÃO DO WHATSAPP
 CREATE TABLE IF NOT EXISTS public.whatsapp_sessions (
     id TEXT PRIMARY KEY DEFAULT 'default',

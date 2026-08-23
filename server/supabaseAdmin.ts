@@ -211,11 +211,20 @@ export async function getWhatsAppConfig(): Promise<WhatsAppConfig> {
   if (supabase) {
     try {
       const { data, error } = await supabase.from('whatsapp_config').select('*').eq('id', 1).maybeSingle();
-      if (!error && data) {
-        let schedules: BillingSchedule[] = inMemoryState.config.schedules || getDefaultSchedules();
+      
+      let authBackupConfig: any = null;
+      try {
+        const { data: authBackup } = await supabase.from('whatsapp_auth').select('data').eq('id', 'whatsapp_config_v2').maybeSingle();
+        if (authBackup && authBackup.data) {
+          authBackupConfig = typeof authBackup.data === 'string' ? JSON.parse(authBackup.data) : authBackup.data;
+        }
+      } catch (e) {}
+
+      if (!error && (data || authBackupConfig)) {
+        let schedules: BillingSchedule[] = authBackupConfig?.schedules || inMemoryState.config.schedules || getDefaultSchedules();
         
         // Carregar schedules salvos do DB se existirem
-        if (data.billing_schedules || data.schedules) {
+        if (data?.billing_schedules || data?.schedules) {
           try {
             const raw = data.billing_schedules || data.schedules;
             const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
@@ -225,7 +234,7 @@ export async function getWhatsAppConfig(): Promise<WhatsAppConfig> {
           } catch (e) {
             // Manter padrão
           }
-        } else if (data.day_of_week !== undefined) {
+        } else if (data?.day_of_week !== undefined) {
           // Inicializar 1º slot a partir das colunas existentes
           schedules = [
             {
@@ -255,24 +264,26 @@ export async function getWhatsAppConfig(): Promise<WhatsAppConfig> {
           ];
         }
 
+        const resolvedMatchTemplate = data?.match_template || authBackupConfig?.matchMessageTemplate || inMemoryState.config.matchMessageTemplate || DEFAULT_MATCH_TEMPLATE;
+
         inMemoryState.config = {
-          id: data.id,
-          isActive: data.is_active ?? false,
-          groupId: data.group_id ?? '',
-          groupName: data.group_name ?? '',
-          dayOfWeek: schedules[0]?.dayOfWeek ?? data.day_of_week ?? 1,
-          sendTime: schedules[0]?.sendTime ?? data.send_time ?? '09:00',
-          messageTemplate: schedules[0]?.messageTemplate ?? data.message_template ?? inMemoryState.config.messageTemplate,
-          billingType: data.billing_type ?? 'general',
-          pixKey: data.pix_key ?? '',
-          pixType: data.pix_type ?? 'cpf',
-          defaultFee: Number(data.default_fee) || 40,
+          id: data?.id || 1,
+          isActive: data?.is_active ?? authBackupConfig?.isActive ?? false,
+          groupId: data?.group_id ?? authBackupConfig?.groupId ?? '',
+          groupName: data?.group_name ?? authBackupConfig?.groupName ?? '',
+          dayOfWeek: schedules[0]?.dayOfWeek ?? data?.day_of_week ?? 1,
+          sendTime: schedules[0]?.sendTime ?? data?.send_time ?? '09:00',
+          messageTemplate: schedules[0]?.messageTemplate ?? data?.message_template ?? inMemoryState.config.messageTemplate,
+          billingType: data?.billing_type ?? authBackupConfig?.billingType ?? 'general',
+          pixKey: data?.pix_key ?? authBackupConfig?.pixKey ?? '',
+          pixType: data?.pix_type ?? authBackupConfig?.pixType ?? 'cpf',
+          defaultFee: Number(data?.default_fee ?? authBackupConfig?.defaultFee) || 40,
           schedules: schedules,
-          matchGroupId: data.match_group_id ?? inMemoryState.config.matchGroupId ?? '',
-          matchGroupName: data.match_group_name ?? inMemoryState.config.matchGroupName ?? '',
-          matchMessageTemplate: data.match_template ?? inMemoryState.config.matchMessageTemplate ?? DEFAULT_MATCH_TEMPLATE,
-          matchAutoSend: data.match_auto_send ?? false,
-          updatedAt: data.updated_at,
+          matchGroupId: data?.match_group_id ?? authBackupConfig?.matchGroupId ?? inMemoryState.config.matchGroupId ?? '',
+          matchGroupName: data?.match_group_name ?? authBackupConfig?.matchGroupName ?? inMemoryState.config.matchGroupName ?? '',
+          matchMessageTemplate: resolvedMatchTemplate,
+          matchAutoSend: data?.match_auto_send ?? authBackupConfig?.matchAutoSend ?? false,
+          updatedAt: data?.updated_at || authBackupConfig?.updatedAt,
         };
         return inMemoryState.config;
       }
@@ -305,12 +316,25 @@ export async function saveWhatsAppConfig(config: Partial<WhatsAppConfig>): Promi
     dayOfWeek: schedules[0]?.dayOfWeek ?? inMemoryState.config.dayOfWeek ?? 1,
     sendTime: schedules[0]?.sendTime ?? inMemoryState.config.sendTime ?? '09:00',
     messageTemplate: schedules[0]?.messageTemplate ?? inMemoryState.config.messageTemplate,
+    matchMessageTemplate: config.matchMessageTemplate ?? inMemoryState.config.matchMessageTemplate ?? DEFAULT_MATCH_TEMPLATE,
     updatedAt: new Date().toISOString(),
   };
   inMemoryState.config = updated;
 
   const supabase = getAdminSupabase();
   if (supabase) {
+    // 1. Salvar backup no whatsapp_auth (JSONB tolerante a schema)
+    try {
+      await supabase.from('whatsapp_auth').upsert({
+        id: 'whatsapp_config_v2',
+        data: updated,
+        updated_at: new Date().toISOString(),
+      });
+    } catch (e) {
+      console.warn('[SupabaseAdmin] Falha ao salvar backup em whatsapp_auth:', e);
+    }
+
+    // 2. Salvar na tabela whatsapp_config
     try {
       const payload: any = {
         id: 1,
@@ -325,18 +349,21 @@ export async function saveWhatsAppConfig(config: Partial<WhatsAppConfig>): Promi
         pix_type: updated.pixType,
         default_fee: updated.defaultFee,
         billing_schedules: JSON.stringify(updated.schedules),
+        match_group_id: updated.matchGroupId || '',
+        match_group_name: updated.matchGroupName || '',
+        match_template: updated.matchMessageTemplate || DEFAULT_MATCH_TEMPLATE,
+        match_auto_send: updated.matchAutoSend || false,
         updated_at: new Date().toISOString(),
       };
 
-      if (updated.matchGroupId !== undefined) payload.match_group_id = updated.matchGroupId;
-      if (updated.matchGroupName !== undefined) payload.match_group_name = updated.matchGroupName;
-      if (updated.matchMessageTemplate !== undefined) payload.match_template = updated.matchMessageTemplate;
-      if (updated.matchAutoSend !== undefined) payload.match_auto_send = updated.matchAutoSend;
-
       const { error: upsertErr } = await supabase.from('whatsapp_config').upsert(payload);
       if (upsertErr) {
-        // Se a coluna billing_schedules ainda não existir no DB do Supabase, tenta sem ela para não travar
+        console.warn('[SupabaseAdmin] Upsert completo falhou no Supabase, tentando payload reduzido:', upsertErr.message);
         delete payload.billing_schedules;
+        delete payload.match_group_id;
+        delete payload.match_group_name;
+        delete payload.match_template;
+        delete payload.match_auto_send;
         await supabase.from('whatsapp_config').upsert(payload);
       }
       await addSystemLog('CONFIG_UPDATED', `Configurações de automação atualizadas com sucesso.`, 'info');
