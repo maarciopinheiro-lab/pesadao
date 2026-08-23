@@ -40,6 +40,38 @@ async function startServer() {
     });
   });
 
+  // Endpoint seguro para o cron-job.org chamar
+  app.post('/api/automation/run', async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization;
+      const secret = process.env.AUTOMATION_SECRET || 'pesadao-secret-token-123';
+      
+      if (!authHeader || authHeader !== `Bearer ${secret}`) {
+        res.status(401).json({ error: 'Não autorizado. Token secreto incorreto ou ausente.' });
+        return;
+      }
+
+      console.log('[Automation] Executando rotina de automação disparada pelo Cron...');
+      
+      // 1. Enfileirar cobranças pendentes da semana atual (se houver)
+      const enqueued = await whatsappService.enqueueDueSchedules();
+      
+      // 2. Processar mensagens da fila (enviar pendentes/falhas)
+      const queueResult = await whatsappService.processPendingQueue();
+
+      res.json({
+        success: true,
+        enqueued,
+        processed: queueResult.processed,
+        failures: queueResult.failures,
+        timestamp: new Date().toISOString()
+      });
+    } catch (err: any) {
+      console.error('[Automation] Erro na rota de automação:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // Keepalive route for external ping services (UptimeRobot)
   app.get('/api/keepalive', (req, res) => {
     res.status(200).send('Alive');

@@ -4,12 +4,6 @@ import { getSupabase } from './supabaseClient';
 const PROD_CLOUD_BACKEND = 'https://ais-pre-ybjbk7lhnyuayauhjkdylp-92263901255.us-west1.run.app';
 
 export function getBackendUrl(): string {
-  if (typeof window !== 'undefined') {
-    const host = window.location.hostname;
-    if (host === 'localhost' || host === '127.0.0.1' || host.includes('run.app')) {
-      return '';
-    }
-  }
   if (typeof localStorage !== 'undefined') {
     const saved = localStorage.getItem('whatsapp_backend_url');
     if (saved && saved.trim()) return saved.trim();
@@ -19,7 +13,8 @@ export function getBackendUrl(): string {
       return (import.meta as any).env.VITE_WHATSAPP_API_URL.trim();
     }
   } catch (e) {}
-  return 'https://pesadao2-l0r2n4b7.b4a.run';
+  // Sempre usa rotas relativas por padrão para usar o Proxy do netlify.toml (CORS-free e centralizado)
+  return '';
 }
 
 export function setBackendUrl(url: string): void {

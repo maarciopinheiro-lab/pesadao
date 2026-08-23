@@ -2,11 +2,11 @@
   command = "npm run build"
   publish = "dist"
 
-# PROXY PARA O BACKEND NO BACK4APP CONTAINERS
-# Substitua a URL abaixo pela URL real gerada pelo Back4app
+# PROXY PARA O BACKEND NO RENDER
+# Substitua a URL abaixo pela URL real gerada pelo Render (Único local de configuração)
 [[redirects]]
   from = "/api/whatsapp/*"
-  to = "https://pesadao-5ptc9caw.b4a.run/api/whatsapp/:splat"
+  to = "RENDER_BACKEND_URL_AQUI/api/whatsapp/:splat"
   status = 200
   force = true
 

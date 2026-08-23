@@ -18,6 +18,10 @@ import {
   getPlayersFromDb,
   getMatchesFromDb,
   getAdminSupabase,
+  enqueueMessage,
+  getPendingQueueMessages,
+  lockQueueMessage,
+  updateQueueMessageStatus,
 } from './supabaseAdmin';
 import { useSupabaseAuthState, memCache } from './supabaseAuthState';
 import { WhatsAppGroup, WhatsAppSessionInfo, WhatsAppConfig } from '../types';
@@ -800,6 +804,147 @@ _#PesadãoFC #FutebolDeDomingo #FamiliaPesadão_`;
       await addSystemLog('EXECUTION_ERROR', `Erro ao enviar cobrança: ${err.message}`, 'error', { error: err.message });
       throw new Error(`Falha no envio: ${err.message}`);
     }
+  }
+
+  // Enfileira disparos automáticos programados da semana atual que já passaram do horário
+  public async enqueueDueSchedules(): Promise<number> {
+    const config = await getWhatsAppConfig();
+    if (!config.isActive || !config.groupId) {
+      console.log('[WhatsAppService] Automação inativa ou sem grupo configurado.');
+      return 0;
+    }
+
+    const nowInBrazil = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
+    const currentDayOfWeek = nowInBrazil.getDay(); // 0 (Domingo) a 6 (Sábado)
+    
+    const schedules = (config.schedules && config.schedules.length > 0)
+      ? config.schedules
+      : [
+          {
+            id: '1',
+            title: '1º Disparo (Lembrete Inicial)',
+            enabled: true,
+            dayOfWeek: config.dayOfWeek ?? 1,
+            sendTime: config.sendTime ?? '09:00',
+            messageTemplate: config.messageTemplate,
+          },
+        ];
+
+    let enqueuedCount = 0;
+    const baseWeek = this.getCurrentReferenceWeek();
+
+    for (const sched of schedules) {
+      if (!sched.enabled) continue;
+
+      // Calcular a data correspondente a este dia da semana na semana atual
+      const targetDate = new Date(nowInBrazil);
+      const diff = sched.dayOfWeek - currentDayOfWeek;
+      targetDate.setDate(nowInBrazil.getDate() + diff);
+
+      const [targetHour, targetMinute] = (sched.sendTime || '09:00').split(':').map(Number);
+      targetDate.setHours(targetHour, targetMinute, 0, 0);
+
+      // Se o horário agendado para esta semana já passou (ou é agora)
+      if (targetDate <= nowInBrazil) {
+        const refWeek = `${baseWeek}_slot${sched.id}`;
+        const executionKey = `billing_weekly_${config.groupId}_${refWeek}`;
+
+        // Gerar a mensagem formatada para este slot
+        const formattedMessage = await this.generateFormattedMessage(sched.messageTemplate);
+
+        const success = await enqueueMessage({
+          tipo: 'billing',
+          destino: config.groupId,
+          mensagem: formattedMessage,
+          scheduledAt: targetDate.toISOString(),
+          executionKey: executionKey
+        });
+
+        if (success) {
+          enqueuedCount++;
+        }
+      }
+    }
+
+    return enqueuedCount;
+  }
+
+  // Processa as mensagens pendentes da fila (conectando sob demanda se necessário)
+  public async processPendingQueue(): Promise<{ success: boolean; processed: number; failures: number }> {
+    const pendingMessages = await getPendingQueueMessages();
+    if (pendingMessages.length === 0) {
+      return { success: true, processed: 0, failures: 0 };
+    }
+
+    console.log(`[WhatsAppService] Encontradas ${pendingMessages.length} mensagens na fila prontas para processar.`);
+    let processed = 0;
+    let failures = 0;
+    let wsConnectedOnDemand = false;
+
+    for (const item of pendingMessages) {
+      // Tentar travar a mensagem
+      const locked = await lockQueueMessage(item.id);
+      if (!locked) {
+        console.log(`[WhatsAppService] Mensagem id ${item.id} já está sendo processada ou já foi enviada. Ignorando.`);
+        continue;
+      }
+
+      // Conectar WhatsApp sob demanda se não estiver conectado
+      if (!this.sock || this.status !== 'connected') {
+        console.log('[WhatsAppService] WhatsApp desconectado. Iniciando conexão sob demanda para envio de fila...');
+        const connected = await this.ensureConnected();
+        if (connected) {
+          wsConnectedOnDemand = true;
+        } else {
+          console.error('[WhatsAppService] Falha ao conectar WhatsApp sob demanda para fila.');
+          await updateQueueMessageStatus(item.id, 'failed', {
+            error: 'Não foi possível conectar ao WhatsApp.',
+            attempts: item.attempts + 1
+          });
+          failures++;
+          continue;
+        }
+      }
+
+      try {
+        // Enviar a mensagem
+        await this.sock.sendMessage(item.destino, { text: item.mensagem });
+
+        // Atualizar status para sucesso
+        await updateQueueMessageStatus(item.id, 'sent', {
+          attempts: item.attempts + 1
+        });
+
+        // Registrar no histórico whatsapp_messages para visualização no frontend
+        await logWhatsAppMessage({
+          groupId: item.destino,
+          groupName: 'Grupo WhatsApp',
+          type: 'auto',
+          status: 'sent',
+          referenceWeek: item.execution_key || this.getCurrentReferenceWeek(),
+          message: item.mensagem
+        });
+
+        processed++;
+      } catch (err: any) {
+        console.error(`[WhatsAppService] Falha ao enviar mensagem da fila id ${item.id}:`, err);
+        await updateQueueMessageStatus(item.id, 'failed', {
+          error: err.message || 'Erro desconhecido no envio',
+          attempts: item.attempts + 1
+        });
+        failures++;
+      }
+    }
+
+    // Se conectamos sob demanda e terminamos, desconectamos de forma limpa para não segurar recursos desnecessários no Render Free
+    if (wsConnectedOnDemand && this.sock) {
+      console.log('[WhatsAppService] Conexão sob demanda finalizada. Fechando conexão de forma limpa...');
+      try {
+        await this.disconnect();
+      } catch (e) {}
+    }
+
+    return { success: true, processed, failures };
   }
 
   private initCron() {

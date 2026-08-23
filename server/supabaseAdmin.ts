@@ -473,3 +473,123 @@ export async function getMatchesFromDb() {
     return [];
   }
 }
+
+// Helper: Enfileira uma mensagem com chave única de execução para evitar duplicados
+export async function enqueueMessage(msg: {
+  tipo: string;
+  destino: string;
+  mensagem: string;
+  scheduledAt: string;
+  executionKey: string;
+}): Promise<boolean> {
+  const supabase = getAdminSupabase();
+  if (!supabase) return false;
+  try {
+    const { error } = await supabase.from('whatsapp_queue').insert([{
+      tipo: msg.tipo,
+      destino: msg.destino,
+      mensagem: msg.mensagem,
+      scheduled_at: msg.scheduledAt,
+      status: 'pending',
+      execution_key: msg.executionKey,
+      attempts: 0,
+      max_attempts: 3
+    }]);
+
+    if (error) {
+      if (error.code === '23505') { // Código de erro de violação de Unique Key no PostgreSQL (execution_key)
+        console.log(`[SupabaseAdmin] Mensagem com chave única ${msg.executionKey} já enfileirada. Ignorando.`);
+        return false;
+      }
+      throw error;
+    }
+    await addSystemLog('QUEUE_ENQUEUED', `Mensagem enfileirada com sucesso. Chave: ${msg.executionKey}`, 'info');
+    return true;
+  } catch (err: any) {
+    console.error('[SupabaseAdmin] Erro ao enfileirar mensagem:', err);
+    return false;
+  }
+}
+
+// Helper: Busca mensagens prontas para envio (scheduled_at <= agora e tentativas < limite)
+export async function getPendingQueueMessages(): Promise<any[]> {
+  const supabase = getAdminSupabase();
+  if (!supabase) return [];
+  try {
+    const nowIso = new Date().toISOString();
+    const { data, error } = await supabase
+      .from('whatsapp_queue')
+      .select('*')
+      .in('status', ['pending', 'failed'])
+      .lte('scheduled_at', nowIso)
+      .lt('attempts', 3) // max_attempts = 3
+      .order('scheduled_at', { ascending: true });
+
+    if (error) throw error;
+    return data || [];
+  } catch (err: any) {
+    console.error('[SupabaseAdmin] Erro ao carregar fila de mensagens:', err);
+    return [];
+  }
+}
+
+// Helper: Tenta bloquear e atualizar o status de uma mensagem para processando antes do envio
+export async function lockQueueMessage(id: number): Promise<boolean> {
+  const supabase = getAdminSupabase();
+  if (!supabase) return false;
+  try {
+    // Para evitar condições de corrida, garantimos que atualizamos apenas se o status for pending ou failed
+    const { data, error } = await supabase
+      .from('whatsapp_queue')
+      .update({
+        status: 'processing',
+        last_attempt_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', id)
+      .in('status', ['pending', 'failed'])
+      .select('id');
+
+    if (error) throw error;
+    return !!(data && data.length > 0);
+  } catch (err) {
+    console.error('[SupabaseAdmin] Erro ao travar mensagem da fila:', err);
+    return false;
+  }
+}
+
+// Helper: Atualiza o status final (sucesso ou falha) de uma mensagem da fila
+export async function updateQueueMessageStatus(
+  id: number,
+  status: 'sent' | 'failed',
+  details: { error?: string; attempts: number }
+): Promise<void> {
+  const supabase = getAdminSupabase();
+  if (!supabase) return;
+  try {
+    const payload: any = {
+      status,
+      attempts: details.attempts,
+      error: details.error || null,
+      last_attempt_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+
+    if (status === 'sent') {
+      payload.sent_at = new Date().toISOString();
+    }
+
+    await supabase
+      .from('whatsapp_queue')
+      .update(payload)
+      .eq('id', id);
+
+    await addSystemLog(
+      status === 'sent' ? 'QUEUE_SENT' : 'QUEUE_FAILED',
+      `Mensagem da fila id ${id} atualizada para ${status}. Tentativas: ${details.attempts}`,
+      status === 'sent' ? 'info' : 'error'
+    );
+  } catch (err) {
+    console.error('[SupabaseAdmin] Erro ao atualizar status da fila:', err);
+  }
+}

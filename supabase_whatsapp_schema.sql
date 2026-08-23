@@ -99,12 +99,34 @@ CREATE TABLE IF NOT EXISTS public.whatsapp_auth (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- 6. TABELA DE FILA DE MENSAGENS (whatsapp_queue)
+CREATE TABLE IF NOT EXISTS public.whatsapp_queue (
+    id BIGSERIAL PRIMARY KEY,
+    tipo TEXT NOT NULL DEFAULT 'billing', -- 'billing', 'match_report', 'test'
+    destino TEXT NOT NULL, -- ID do grupo ou número
+    mensagem TEXT NOT NULL,
+    scheduled_at TIMESTAMPTZ NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending', -- 'pending', 'processing', 'sent', 'failed'
+    attempts INT NOT NULL DEFAULT 0,
+    max_attempts INT NOT NULL DEFAULT 3,
+    last_attempt_at TIMESTAMPTZ,
+    sent_at TIMESTAMPTZ,
+    error TEXT,
+    execution_key TEXT UNIQUE, -- Chave única para evitar duplicados
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_whatsapp_queue_status_sched ON public.whatsapp_queue (status, scheduled_at);
+CREATE INDEX IF NOT EXISTS idx_whatsapp_queue_exec_key ON public.whatsapp_queue (execution_key);
+
 -- HABILITAR RLS (Row Level Security) e permitir acesso para autenticados e chave anônima da aplicação
 ALTER TABLE public.whatsapp_config ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.whatsapp_sessions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.whatsapp_messages ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.whatsapp_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.whatsapp_auth ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.whatsapp_queue ENABLE ROW LEVEL SECURITY;
 
 -- Políticas de acesso aberto para o app (anônimo e autenticado)
 DROP POLICY IF EXISTS "Permitir leitura total whatsapp_config" ON public.whatsapp_config;
@@ -121,3 +143,6 @@ CREATE POLICY "Permitir leitura total whatsapp_logs" ON public.whatsapp_logs FOR
 
 DROP POLICY IF EXISTS "Permitir acesso total whatsapp_auth" ON public.whatsapp_auth;
 CREATE POLICY "Permitir acesso total whatsapp_auth" ON public.whatsapp_auth FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Permitir acesso total whatsapp_queue" ON public.whatsapp_queue;
+CREATE POLICY "Permitir acesso total whatsapp_queue" ON public.whatsapp_queue FOR ALL USING (true) WITH CHECK (true);
