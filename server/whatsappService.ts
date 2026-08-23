@@ -43,6 +43,7 @@ class WhatsAppService {
   private isConnecting = false;
   private reconnectInProgress = false;
   private pairingInProgress = false;
+  private isProcessingQueue = false;
 
   constructor() {
     this.initCron();
@@ -568,12 +569,7 @@ class WhatsAppService {
     return Math.ceil((((date.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
   }
 
-  public async sendTestMessage(customTemplate?: string, clientPlayers?: any[], targetMonthKey?: string): Promise<{ success: boolean; message: string }> {
-    const isConnected = await this.ensureConnected();
-    if (!isConnected) {
-      throw new Error('WhatsApp não está conectado. Por favor, reconecte o bot.');
-    }
-
+  public async sendTestMessage(customTemplate?: string, clientPlayers?: any[], targetMonthKey?: string, idempotencyKey?: string): Promise<{ success: boolean; status?: string; message: string }> {
     const config = await getWhatsAppConfig();
     if (!config.groupId) {
       throw new Error('Nenhum grupo do WhatsApp foi selecionado nas configurações.');
@@ -581,40 +577,28 @@ class WhatsAppService {
 
     const baseMessage = await this.generateFormattedMessage(customTemplate, undefined, clientPlayers, targetMonthKey);
     const testMessageText = `🤖 *TESTE DE AUTOMAÇÃO - APP PESADÃO*\n_Esta é uma mensagem de teste enviada pelo painel administrativo._\n\n${baseMessage}`;
-
     const refWeek = this.getCurrentReferenceWeek();
+    const executionKey = idempotencyKey || `test_billing_${config.groupId}_${refWeek}_${Date.now()}`;
 
-    try {
-      await this.sock.sendMessage(config.groupId, { text: testMessageText });
+    const queueRes = await enqueueMessage({
+      tipo: 'test',
+      destino: config.groupId,
+      mensagem: testMessageText,
+      executionKey: executionKey,
+    });
 
-      await logWhatsAppMessage({
-        groupId: config.groupId,
-        groupName: config.groupName || 'Grupo de Teste',
-        type: 'test',
-        status: 'sent',
-        referenceWeek: refWeek,
-        message: testMessageText,
+    // Iniciar processamento da fila em segundo plano imediatamente
+    setImmediate(() => {
+      this.processPendingQueue().catch((err) => {
+        console.error('[WhatsAppService] Erro ao processar fila em background após teste:', err);
       });
+    });
 
-      await addSystemLog('TEST_MESSAGE_SENT', `Mensagem de teste enviada com sucesso para o grupo ${config.groupName}`, 'info');
-
-      return { success: true, message: 'Mensagem de teste enviada com sucesso para o grupo!' };
-    } catch (err: any) {
-      console.error('[WhatsAppService] Erro ao enviar mensagem de teste:', err);
-
-      await logWhatsAppMessage({
-        groupId: config.groupId,
-        groupName: config.groupName || 'Grupo',
-        type: 'test',
-        status: 'error',
-        referenceWeek: refWeek,
-        message: testMessageText,
-        error: err.message,
-      });
-
-      await addSystemLog('TEST_MESSAGE_ERROR', `Falha ao enviar mensagem de teste: ${err.message}`, 'error');
-      throw new Error(`Erro no envio: ${err.message}`);
-    }
+    return {
+      success: true,
+      status: queueRes.status,
+      message: queueRes.message,
+    };
   }
 
   public async formatMatchReport(matchData: any, customTemplate?: string): Promise<string> {
@@ -729,12 +713,7 @@ _#PesadãoFC #FutebolDeDomingo #FamiliaPesadão_`;
     return result;
   }
 
-  public async sendMatchReport(matchData: any, customTemplate?: string, targetGroupId?: string): Promise<{ success: boolean; message: string }> {
-    const isConnected = await this.ensureConnected();
-    if (!isConnected) {
-      throw new Error('WhatsApp não está conectado. Reconectando automaticamente, tente enviar novamente em instantes.');
-    }
-
+  public async sendMatchReport(matchData: any, customTemplate?: string, targetGroupId?: string, idempotencyKey?: string): Promise<{ success: boolean; status?: string; message: string }> {
     const config = await getWhatsAppConfig();
     const destGroupId = targetGroupId || config.matchGroupId || config.groupId;
 
@@ -742,54 +721,32 @@ _#PesadãoFC #FutebolDeDomingo #FamiliaPesadão_`;
       throw new Error('Nenhum grupo de WhatsApp configurado para envio do pós-jogo.');
     }
 
-    const groupName = (destGroupId === config.matchGroupId ? config.matchGroupName : config.groupName) || 'Grupo do Jogo';
     const messageText = await this.formatMatchReport(matchData, customTemplate);
-    const refWeek = this.getCurrentReferenceWeek();
+    const matchIdentifier = matchData?.id || matchData?.date || Date.now();
+    const executionKey = idempotencyKey || `match_report_${matchIdentifier}_${matchData?.homeScore ?? 0}x${matchData?.awayScore ?? 0}`;
 
-    try {
-      await this.sock.sendMessage(destGroupId, { text: messageText });
+    const queueRes = await enqueueMessage({
+      tipo: 'match_report',
+      destino: destGroupId,
+      mensagem: messageText,
+      executionKey: executionKey,
+    });
 
-      await logWhatsAppMessage({
-        groupId: destGroupId,
-        groupName: groupName,
-        type: 'match_report',
-        status: 'sent',
-        referenceWeek: refWeek,
-        message: messageText,
+    // Disparar processamento da fila em segundo plano imediatamente
+    setImmediate(() => {
+      this.processPendingQueue().catch((err) => {
+        console.error('[WhatsAppService] Erro ao processar fila em background após relatório de jogo:', err);
       });
+    });
 
-      await addSystemLog(
-        'MATCH_REPORT_SENT',
-        `Relatório do jogo contra ${matchData.opponent || 'Adversário'} enviado para o grupo ${groupName}.`,
-        'info',
-        { groupId: destGroupId }
-      );
-
-      return { success: true, message: `Relatório do jogo enviado com sucesso para o grupo ${groupName}!` };
-    } catch (err: any) {
-      console.error('[WhatsAppService] Erro ao enviar relatório de jogo:', err);
-
-      await logWhatsAppMessage({
-        groupId: destGroupId,
-        groupName: groupName,
-        type: 'match_report',
-        status: 'error',
-        referenceWeek: refWeek,
-        message: messageText,
-        error: err.message,
-      });
-
-      await addSystemLog('MATCH_REPORT_ERROR', `Falha ao enviar relatório do jogo: ${err.message}`, 'error');
-      throw new Error(`Erro ao enviar relatório: ${err.message}`);
-    }
+    return {
+      success: true,
+      status: queueRes.status,
+      message: queueRes.message,
+    };
   }
 
-  public async sendMatchTestMessage(): Promise<{ success: boolean; message: string }> {
-    const isConnected = await this.ensureConnected();
-    if (!isConnected) {
-      throw new Error('WhatsApp não está conectado. Por favor, reconecte o bot.');
-    }
-
+  public async sendMatchTestMessage(idempotencyKey?: string): Promise<{ success: boolean; status?: string; message: string }> {
     const config = await getWhatsAppConfig();
     const destGroupId = config.matchGroupId || config.groupId;
     if (!destGroupId) {
@@ -813,42 +770,30 @@ _#PesadãoFC #FutebolDeDomingo #FamiliaPesadão_`;
 
     const formatted = await this.formatMatchReport(dummyMatch);
     const testText = `🤖 *TESTE DE RELATÓRIO PÓS-JOGO*\n_Esta é uma mensagem de demonstração do pós-jogo._\n\n${formatted}`;
+    const executionKey = idempotencyKey || `match_test_${destGroupId}_${Date.now()}`;
 
-    const refWeek = this.getCurrentReferenceWeek();
-    const groupName = (destGroupId === config.matchGroupId ? config.matchGroupName : config.groupName) || 'Grupo do Jogo';
+    const queueRes = await enqueueMessage({
+      tipo: 'match_test',
+      destino: destGroupId,
+      mensagem: testText,
+      executionKey: executionKey,
+    });
 
-    try {
-      await this.sock.sendMessage(destGroupId, { text: testText });
-
-      await logWhatsAppMessage({
-        groupId: destGroupId,
-        groupName: groupName,
-        type: 'match_test',
-        status: 'sent',
-        referenceWeek: refWeek,
-        message: testText,
+    setImmediate(() => {
+      this.processPendingQueue().catch((err) => {
+        console.error('[WhatsAppService] Erro ao processar fila em background após teste de jogo:', err);
       });
+    });
 
-      await addSystemLog('MATCH_TEST_SENT', `Teste de pós-jogo enviado com sucesso para ${groupName}.`, 'info');
-
-      return { success: true, message: `Teste de pós-jogo enviado com sucesso para o grupo ${groupName}!` };
-    } catch (err: any) {
-      await logWhatsAppMessage({
-        groupId: destGroupId,
-        groupName: groupName,
-        type: 'match_test',
-        status: 'error',
-        referenceWeek: refWeek,
-        message: testText,
-        error: err.message,
-      });
-
-      throw new Error(`Erro ao enviar teste: ${err.message}`);
-    }
+    return {
+      success: true,
+      status: queueRes.status,
+      message: queueRes.message,
+    };
   }
 
-  public async triggerManualSend(customTemplate?: string, clientPlayers?: any[], targetMonthKey?: string, scheduleId?: string): Promise<{ success: boolean; message: string }> {
-    return await this.executeWeeklyBilling('manual', customTemplate, clientPlayers, targetMonthKey, scheduleId);
+  public async triggerManualSend(customTemplate?: string, clientPlayers?: any[], targetMonthKey?: string, scheduleId?: string, idempotencyKey?: string): Promise<{ success: boolean; status?: string; message: string }> {
+    return await this.executeWeeklyBilling('manual', customTemplate, clientPlayers, targetMonthKey, scheduleId, undefined, idempotencyKey);
   }
 
   public async executeWeeklyBilling(
@@ -857,19 +802,13 @@ _#PesadãoFC #FutebolDeDomingo #FamiliaPesadão_`;
     clientPlayers?: any[],
     targetMonthKey?: string,
     scheduleId?: string,
-    scheduleTitle?: string
-  ): Promise<{ success: boolean; message: string }> {
+    scheduleTitle?: string,
+    idempotencyKey?: string
+  ): Promise<{ success: boolean; status?: string; message: string }> {
     const config = await getWhatsAppConfig();
 
     if (triggerType === 'auto' && !config.isActive) {
       return { success: false, message: 'Automação está desativada.' };
-    }
-
-    const isConnected = await this.ensureConnected();
-    if (!isConnected) {
-      const errMsg = 'WhatsApp não está conectado para o envio de cobrança.';
-      await addSystemLog('EXECUTION_SKIPPED', errMsg, 'warn');
-      return { success: false, message: errMsg };
     }
 
     if (!config.groupId) {
@@ -880,6 +819,11 @@ _#PesadãoFC #FutebolDeDomingo #FamiliaPesadão_`;
 
     const baseWeek = this.getCurrentReferenceWeek();
     const refWeek = scheduleId ? `${baseWeek}_slot${scheduleId}` : baseWeek;
+    const executionKey = idempotencyKey || (
+      triggerType === 'auto'
+        ? `billing_weekly_${config.groupId}_${refWeek}`
+        : `billing_manual_${config.groupId}_${refWeek}_${Date.now()}`
+    );
 
     // PROTEÇÃO CONTRA DUPLICIDADE:
     // Se for execução automática, verificar se já foi enviada nesta semana para este slot específico
@@ -888,48 +832,30 @@ _#PesadãoFC #FutebolDeDomingo #FamiliaPesadão_`;
       if (alreadySent) {
         const msg = `Envio ignorado: Cobrança (${scheduleTitle || `Disparo ${scheduleId || 1}`}) já foi enviada nesta semana (${baseWeek}) para o grupo ${config.groupName}.`;
         await addSystemLog('SCHEDULED_SKIPPED_DUPLICATE', msg, 'info', { refWeek, groupId: config.groupId });
-        return { success: true, message: msg };
+        return { success: true, status: 'sent', message: msg };
       }
     }
 
-    try {
-      const finalMessage = await this.generateFormattedMessage(customTemplate, undefined, clientPlayers, targetMonthKey);
-      await this.sock.sendMessage(config.groupId, { text: finalMessage });
+    const finalMessage = await this.generateFormattedMessage(customTemplate, undefined, clientPlayers, targetMonthKey);
 
-      await logWhatsAppMessage({
-        groupId: config.groupId,
-        groupName: config.groupName,
-        type: triggerType,
-        status: 'sent',
-        referenceWeek: refWeek,
-        message: finalMessage,
+    const queueRes = await enqueueMessage({
+      tipo: 'billing',
+      destino: config.groupId,
+      mensagem: finalMessage,
+      executionKey: executionKey,
+    });
+
+    setImmediate(() => {
+      this.processPendingQueue().catch((err) => {
+        console.error('[WhatsAppService] Erro ao processar fila em background após cobrança:', err);
       });
+    });
 
-      const dispName = scheduleTitle ? `${scheduleTitle}` : (scheduleId ? `Disparo ${scheduleId}` : 'Cobrança semanal');
-      await addSystemLog(
-        triggerType === 'auto' ? 'SCHEDULED_SENT' : 'MANUAL_SENT',
-        `${dispName} enviado com sucesso para o grupo ${config.groupName} (Ref: ${baseWeek}).`,
-        'info',
-        { refWeek, groupId: config.groupId }
-      );
-
-      return { success: true, message: `${dispName} enviado com sucesso para o grupo ${config.groupName}!` };
-    } catch (err: any) {
-      console.error('[WhatsAppService] Erro ao executar envio de cobrança:', err);
-
-      await logWhatsAppMessage({
-        groupId: config.groupId,
-        groupName: config.groupName,
-        type: triggerType,
-        status: 'error',
-        referenceWeek: refWeek,
-        message: customTemplate || config.messageTemplate,
-        error: err.message,
-      });
-
-      await addSystemLog('EXECUTION_ERROR', `Erro ao enviar cobrança: ${err.message}`, 'error', { error: err.message });
-      throw new Error(`Falha no envio: ${err.message}`);
-    }
+    return {
+      success: true,
+      status: queueRes.status,
+      message: queueRes.message,
+    };
   }
 
   // Enfileira disparos automáticos programados da semana atual que já passaram do horário
@@ -978,7 +904,7 @@ _#PesadãoFC #FutebolDeDomingo #FamiliaPesadão_`;
         // Gerar a mensagem formatada para este slot
         const formattedMessage = await this.generateFormattedMessage(sched.messageTemplate);
 
-        const success = await enqueueMessage({
+        const res = await enqueueMessage({
           tipo: 'billing',
           destino: config.groupId,
           mensagem: formattedMessage,
@@ -986,7 +912,7 @@ _#PesadãoFC #FutebolDeDomingo #FamiliaPesadão_`;
           executionKey: executionKey
         });
 
-        if (success) {
+        if (res.success) {
           enqueuedCount++;
         }
       }
@@ -995,95 +921,99 @@ _#PesadãoFC #FutebolDeDomingo #FamiliaPesadão_`;
     return enqueuedCount;
   }
 
-  // Processa as mensagens pendentes da fila (conectando sob demanda se necessário)
+  // Processa as mensagens pendentes da fila de forma segura e não concorrente
   public async processPendingQueue(): Promise<{ success: boolean; processed: number; failures: number }> {
-    const pendingMessages = await getPendingQueueMessages();
-    if (pendingMessages.length === 0) {
+    if (this.isProcessingQueue) {
+      console.log('[WhatsAppService] Processamento de fila já em andamento, aguardando término...');
       return { success: true, processed: 0, failures: 0 };
     }
 
-    console.log(`[WhatsAppService] Encontradas ${pendingMessages.length} mensagens na fila prontas para processar.`);
-    let processed = 0;
-    let failures = 0;
-    let wsConnectedOnDemand = false;
+    this.isProcessingQueue = true;
 
-    for (const item of pendingMessages) {
-      // Tentar travar a mensagem
-      const locked = await lockQueueMessage(item.id);
-      if (!locked) {
-        console.log(`[WhatsAppService] Mensagem id ${item.id} já está sendo processada ou já foi enviada. Ignorando.`);
-        continue;
+    try {
+      const pendingMessages = await getPendingQueueMessages();
+      if (pendingMessages.length === 0) {
+        return { success: true, processed: 0, failures: 0 };
       }
 
-      // Conectar WhatsApp sob demanda se não estiver conectado
-      if (!this.sock || this.status !== 'connected') {
-        console.log('[WhatsAppService] WhatsApp desconectado. Iniciando conexão sob demanda para envio de fila...');
-        const connected = await this.ensureConnected();
-        if (connected) {
-          wsConnectedOnDemand = true;
-        } else {
-          console.error('[WhatsAppService] Falha ao conectar WhatsApp sob demanda para fila.');
-          await updateQueueMessageStatus(item.id, 'failed', {
-            error: 'Não foi possível conectar ao WhatsApp.',
-            attempts: item.attempts + 1
+      console.log(`[WhatsAppService] Processando ${pendingMessages.length} mensagens na fila.`);
+      let processed = 0;
+      let failures = 0;
+
+      for (const item of pendingMessages) {
+        // Tentar travar a mensagem atomicamente
+        const locked = await lockQueueMessage(item.id);
+        if (!locked) {
+          console.log(`[WhatsAppService] Mensagem id ${item.id} já bloqueada por outro processo. Ignorando.`);
+          continue;
+        }
+
+        // Garantir conexão com o WhatsApp
+        if (!this.sock || this.status !== 'connected') {
+          console.log('[WhatsAppService] WhatsApp desconectado. Tentando conectar para processamento da fila...');
+          const connected = await this.ensureConnected(15000);
+          if (!connected) {
+            console.error('[WhatsAppService] Falha ao garantir conexão com o WhatsApp para envio da fila.');
+            await updateQueueMessageStatus(item.id, 'failed', {
+              error: 'WhatsApp desconectado no momento do envio.',
+              attempts: (item.attempts || 0) + 1
+            });
+            failures++;
+            continue;
+          }
+        }
+
+        try {
+          // Enviar a mensagem
+          await this.sock.sendMessage(item.destino, { text: item.mensagem });
+
+          // Atualizar status na fila para sent
+          await updateQueueMessageStatus(item.id, 'sent', {
+            attempts: (item.attempts || 0) + 1
+          });
+
+          // Registrar no log de mensagens
+          await logWhatsAppMessage({
+            groupId: item.destino,
+            groupName: 'Grupo WhatsApp',
+            type: item.tipo === 'match_report' ? 'match_report' : item.tipo === 'test' ? 'test' : item.tipo === 'match_test' ? 'match_test' : 'auto',
+            status: 'sent',
+            referenceWeek: item.execution_key || this.getCurrentReferenceWeek(),
+            message: item.mensagem
+          });
+
+          processed++;
+        } catch (err: any) {
+          console.error(`[WhatsAppService] Falha ao enviar mensagem da fila id ${item.id}:`, err);
+          const currentAttempts = (item.attempts || 0) + 1;
+          const nextStatus = currentAttempts >= (item.max_attempts || 3) ? 'failed' : 'pending';
+
+          await updateQueueMessageStatus(item.id, nextStatus, {
+            error: err.message || 'Erro no envio via Baileys',
+            attempts: currentAttempts
           });
           failures++;
-          continue;
         }
       }
 
-      try {
-        // Enviar a mensagem
-        await this.sock.sendMessage(item.destino, { text: item.mensagem });
-
-        // Atualizar status para sucesso
-        await updateQueueMessageStatus(item.id, 'sent', {
-          attempts: item.attempts + 1
-        });
-
-        // Registrar no histórico whatsapp_messages para visualização no frontend
-        await logWhatsAppMessage({
-          groupId: item.destino,
-          groupName: 'Grupo WhatsApp',
-          type: 'auto',
-          status: 'sent',
-          referenceWeek: item.execution_key || this.getCurrentReferenceWeek(),
-          message: item.mensagem
-        });
-
-        processed++;
-      } catch (err: any) {
-        console.error(`[WhatsAppService] Falha ao enviar mensagem da fila id ${item.id}:`, err);
-        await updateQueueMessageStatus(item.id, 'failed', {
-          error: err.message || 'Erro desconhecido no envio',
-          attempts: item.attempts + 1
-        });
-        failures++;
-      }
+      return { success: true, processed, failures };
+    } finally {
+      this.isProcessingQueue = false;
     }
-
-    // Se conectamos sob demanda e terminamos, desconectamos de forma limpa para não segurar recursos desnecessários no Render Free
-    if (wsConnectedOnDemand && this.sock) {
-      console.log('[WhatsAppService] Conexão sob demanda finalizada. Fechando conexão de forma limpa...');
-      try {
-        await this.disconnect();
-      } catch (e) {}
-    }
-
-    return { success: true, processed, failures };
   }
 
   private initCron() {
-    // Roda a cada minuto para checar se deve disparar cobrança
+    // Roda a cada minuto para checar se deve disparar cobrança e processar fila
     this.cronJob = cron.schedule('* * * * *', async () => {
       try {
         await this.checkCronTrigger();
+        await this.processPendingQueue();
       } catch (err) {
         console.error('[WhatsAppService] Erro no cron scheduler:', err);
       }
     });
 
-    console.log('[WhatsAppService] Agendador semanal com suporte a múltiplos disparos inicializado.');
+    console.log('[WhatsAppService] Agendador e processador da fila semanal inicializado.');
   }
 
   private async checkCronTrigger() {

@@ -139,22 +139,24 @@ async function startServer() {
   // Enviar mensagem de teste
   app.post('/api/whatsapp/send-test', async (req, res) => {
     try {
-      const { customTemplate, players, monthKey } = req.body || {};
-      const result = await whatsappService.sendTestMessage(customTemplate, players, monthKey);
-      res.json(result);
+      const { customTemplate, players, monthKey, idempotencyKey } = req.body || {};
+      const result = await whatsappService.sendTestMessage(customTemplate, players, monthKey, idempotencyKey);
+      res.status(200).json(result);
     } catch (err: any) {
-      res.status(400).json({ error: err.message });
+      console.error('[API] Erro ao enfileirar teste de WhatsApp:', err);
+      res.status(400).json({ error: err.message || 'Não foi possível preparar o envio. Tente novamente.' });
     }
   });
 
   // Disparo manual imediato
   app.post('/api/whatsapp/send-now', async (req, res) => {
     try {
-      const { customTemplate, players, monthKey, scheduleId } = req.body || {};
-      const result = await whatsappService.triggerManualSend(customTemplate, players, monthKey, scheduleId);
-      res.json(result);
+      const { customTemplate, players, monthKey, scheduleId, idempotencyKey } = req.body || {};
+      const result = await whatsappService.triggerManualSend(customTemplate, players, monthKey, scheduleId, idempotencyKey);
+      res.status(200).json(result);
     } catch (err: any) {
-      res.status(400).json({ error: err.message });
+      console.error('[API] Erro ao enfileirar disparo manual de WhatsApp:', err);
+      res.status(400).json({ error: err.message || 'Não foi possível preparar o envio. Tente novamente.' });
     }
   });
 
@@ -183,21 +185,24 @@ async function startServer() {
   // Enviar relatório pós-jogo para o grupo configurado
   app.post('/api/whatsapp/send-match', async (req, res) => {
     try {
-      const { matchData, template, targetGroupId } = req.body;
-      const result = await whatsappService.sendMatchReport(matchData, template, targetGroupId);
-      res.json(result);
+      const { matchData, template, targetGroupId, idempotencyKey } = req.body || {};
+      const result = await whatsappService.sendMatchReport(matchData, template, targetGroupId, idempotencyKey);
+      res.status(200).json(result);
     } catch (err: any) {
-      res.status(400).json({ error: err.message });
+      console.error('[API] Erro ao enfileirar relatório pós-jogo:', err);
+      res.status(400).json({ error: err.message || 'Não foi possível preparar o envio. Tente novamente.' });
     }
   });
 
   // Enviar teste de relatório pós-jogo
   app.post('/api/whatsapp/send-match-test', async (req, res) => {
     try {
-      const result = await whatsappService.sendMatchTestMessage();
-      res.json(result);
+      const { idempotencyKey } = req.body || {};
+      const result = await whatsappService.sendMatchTestMessage(idempotencyKey);
+      res.status(200).json(result);
     } catch (err: any) {
-      res.status(400).json({ error: err.message });
+      console.error('[API] Erro ao enfileirar teste de pós-jogo:', err);
+      res.status(400).json({ error: err.message || 'Não foi possível preparar o envio. Tente novamente.' });
     }
   });
 

@@ -568,11 +568,12 @@ export const WhatsAppTab: React.FC<WhatsAppTabProps> = ({ players, selectedDate,
     setSendingTest(true);
     try {
       const currentMonthKey = getMonthKey(selectedDate);
-      const res = await sendTestMessage(templateToSend, players, currentMonthKey);
-      showToast(res.message, 'success');
+      const idempotencyKey = `test_billing_${config.groupId}_slot${targetSched.id}_${Date.now()}`;
+      const res = await sendTestMessage(templateToSend, players, currentMonthKey, idempotencyKey);
+      showToast(res.message || 'Mensagem adicionada à fila de envio. O WhatsApp fará o envio automaticamente.', 'success');
       await refreshHistoryAndLogs();
     } catch (err: any) {
-      showToast(err.message, 'error');
+      showToast(err.message || 'Não foi possível preparar o envio. Tente novamente.', 'error');
       await refreshHistoryAndLogs();
     } finally {
       setSendingTest(false);
@@ -592,11 +593,12 @@ export const WhatsAppTab: React.FC<WhatsAppTabProps> = ({ players, selectedDate,
 
     setSendingMatchTest(true);
     try {
-      const res = await sendMatchTestWhatsAppMessage();
-      showToast(res.message, 'success');
+      const idempotencyKey = `match_test_${targetGroup}_${Date.now()}`;
+      const res = await sendMatchTestWhatsAppMessage(idempotencyKey);
+      showToast(res.message || 'Mensagem adicionada à fila de envio. O WhatsApp fará o envio automaticamente.', 'success');
       await refreshHistoryAndLogs();
     } catch (err: any) {
-      showToast(err.message, 'error');
+      showToast(err.message || 'Não foi possível preparar o envio. Tente novamente.', 'error');
       await refreshHistoryAndLogs();
     } finally {
       setSendingMatchTest(false);
@@ -621,11 +623,12 @@ export const WhatsAppTab: React.FC<WhatsAppTabProps> = ({ players, selectedDate,
     setSendingManual(true);
     try {
       const currentMonthKey = getMonthKey(selectedDate);
-      const res = await sendNow(templateToSend, players, currentMonthKey, targetSched.id);
-      showToast(res.message, 'success');
+      const idempotencyKey = `manual_billing_${config.groupId}_slot${targetSched.id}_${Date.now()}`;
+      const res = await sendNow(templateToSend, players, currentMonthKey, targetSched.id, idempotencyKey);
+      showToast(res.message || 'Mensagem adicionada à fila de envio. O WhatsApp fará o envio automaticamente.', 'success');
       await refreshHistoryAndLogs();
     } catch (err: any) {
-      showToast(err.message, 'error');
+      showToast(err.message || 'Não foi possível preparar o envio. Tente novamente.', 'error');
       await refreshHistoryAndLogs();
     } finally {
       setSendingManual(false);

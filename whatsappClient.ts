@@ -540,29 +540,65 @@ export async function previewMatchWhatsAppMessage(matchData: any, template?: str
   return { preview: rendered };
 }
 
-export async function sendTestMessage(customTemplate?: string, players?: any[], monthKey?: string): Promise<{ success: boolean; message: string }> {
-  return await requestWhatsAppApi('/send-test', {
-    method: 'POST',
-    body: JSON.stringify({ customTemplate, players: sanitizePlayers(players), monthKey }),
-  }, 35000);
+export async function sendTestMessage(customTemplate?: string, players?: any[], monthKey?: string, idempotencyKey?: string): Promise<{ success: boolean; message: string; status?: string }> {
+  try {
+    const key = idempotencyKey || `test_${Date.now()}`;
+    return await requestWhatsAppApi('/send-test', {
+      method: 'POST',
+      body: JSON.stringify({ customTemplate, players: sanitizePlayers(players), monthKey, idempotencyKey: key }),
+    }, 15000);
+  } catch (err: any) {
+    if (err.name === 'AbortError' || err.message?.includes('esgotou')) {
+      throw new Error('Não foi possível preparar o envio. Tente novamente.');
+    }
+    throw err;
+  }
 }
 
-export async function sendNow(customTemplate?: string, players?: any[], monthKey?: string, scheduleId?: string): Promise<{ success: boolean; message: string }> {
-  return await requestWhatsAppApi('/send-now', {
-    method: 'POST',
-    body: JSON.stringify({ customTemplate, players: sanitizePlayers(players), monthKey, scheduleId }),
-  }, 35000);
+export async function sendNow(customTemplate?: string, players?: any[], monthKey?: string, scheduleId?: string, idempotencyKey?: string): Promise<{ success: boolean; message: string; status?: string }> {
+  try {
+    const key = idempotencyKey || `manual_${scheduleId || '1'}_${Date.now()}`;
+    return await requestWhatsAppApi('/send-now', {
+      method: 'POST',
+      body: JSON.stringify({ customTemplate, players: sanitizePlayers(players), monthKey, scheduleId, idempotencyKey: key }),
+    }, 15000);
+  } catch (err: any) {
+    if (err.name === 'AbortError' || err.message?.includes('esgotou')) {
+      throw new Error('Não foi possível preparar o envio. Tente novamente.');
+    }
+    throw err;
+  }
 }
 
-export async function sendMatchWhatsAppReport(matchData: any, template?: string, targetGroupId?: string): Promise<{ success: boolean; message: string }> {
-  return await requestWhatsAppApi('/send-match', {
-    method: 'POST',
-    body: JSON.stringify({ matchData, template, targetGroupId }),
-  }, 35000);
+export async function sendMatchWhatsAppReport(matchData: any, template?: string, targetGroupId?: string, idempotencyKey?: string): Promise<{ success: boolean; message: string; status?: string }> {
+  try {
+    const matchId = matchData?.id || matchData?.date || Date.now();
+    const key = idempotencyKey || `match_report_${matchId}_${matchData?.homeScore ?? 0}x${matchData?.awayScore ?? 0}`;
+    return await requestWhatsAppApi('/send-match', {
+      method: 'POST',
+      body: JSON.stringify({ matchData, template, targetGroupId, idempotencyKey: key }),
+    }, 15000);
+  } catch (err: any) {
+    if (err.name === 'AbortError' || err.message?.includes('esgotou')) {
+      throw new Error('Não foi possível preparar o envio. Tente novamente.');
+    }
+    throw err;
+  }
 }
 
-export async function sendMatchTestWhatsAppMessage(): Promise<{ success: boolean; message: string }> {
-  return await requestWhatsAppApi('/send-match-test', { method: 'POST' }, 35000);
+export async function sendMatchTestWhatsAppMessage(idempotencyKey?: string): Promise<{ success: boolean; message: string; status?: string }> {
+  try {
+    const key = idempotencyKey || `match_test_${Date.now()}`;
+    return await requestWhatsAppApi('/send-match-test', {
+      method: 'POST',
+      body: JSON.stringify({ idempotencyKey: key }),
+    }, 15000);
+  } catch (err: any) {
+    if (err.name === 'AbortError' || err.message?.includes('esgotou')) {
+      throw new Error('Não foi possível preparar o envio. Tente novamente.');
+    }
+    throw err;
+  }
 }
 
 export async function getWhatsAppHistory(limit = 50): Promise<WhatsAppMessageLog[]> {

@@ -722,17 +722,24 @@ const App: React.FC = () => {
   };
 
   const handleSendMatchToWhatsAppGroup = async () => {
-    if (!matchToShare) return;
+    if (!matchToShare || sendingMatchReport) return;
     setSendingMatchReport(true);
     setMatchShareFeedback(null);
     try {
-      const res = await sendMatchWhatsAppReport(matchToShare, matchShareText);
-      setMatchShareFeedback({ text: res.message || 'Relatório enviado com sucesso!', type: 'success' });
+      const matchId = matchToShare.id || matchToShare.date || Date.now();
+      const idempotencyKey = `match_report_${matchId}_${matchToShare.homeScore ?? 0}x${matchToShare.awayScore ?? 0}`;
+      const res = await sendMatchWhatsAppReport(matchToShare, matchShareText, undefined, idempotencyKey);
+      
+      const feedbackText = res.message || 'Mensagem adicionada à fila de envio. O WhatsApp fará o envio automaticamente.';
+      setMatchShareFeedback({ text: feedbackText, type: 'success' });
       setTimeout(() => {
         setIsMatchShareModalOpen(false);
       }, 2500);
     } catch (err: any) {
-      setMatchShareFeedback({ text: err.message || 'Falha ao enviar relatório no WhatsApp.', type: 'error' });
+      setMatchShareFeedback({ 
+        text: err.message || 'Não foi possível preparar o envio. Tente novamente.', 
+        type: 'error' 
+      });
     } finally {
       setSendingMatchReport(false);
     }

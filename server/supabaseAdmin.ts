@@ -479,118 +479,250 @@ export async function enqueueMessage(msg: {
   tipo: string;
   destino: string;
   mensagem: string;
-  scheduledAt: string;
+  scheduledAt?: string;
   executionKey: string;
-}): Promise<boolean> {
+}): Promise<{ success: boolean; status: 'sent' | 'pending' | 'processing' | 'failed'; message: string; id?: number }> {
   const supabase = getAdminSupabase();
-  if (!supabase) return false;
-  try {
-    const { error } = await supabase.from('whatsapp_queue').insert([{
-      tipo: msg.tipo,
-      destino: msg.destino,
-      mensagem: msg.mensagem,
-      scheduled_at: msg.scheduledAt,
-      status: 'pending',
-      execution_key: msg.executionKey,
-      attempts: 0,
-      max_attempts: 3
-    }]);
+  const scheduledAt = msg.scheduledAt || new Date().toISOString();
 
-    if (error) {
-      if (error.code === '23505') { // Código de erro de violação de Unique Key no PostgreSQL (execution_key)
-        console.log(`[SupabaseAdmin] Mensagem com chave única ${msg.executionKey} já enfileirada. Ignorando.`);
-        return false;
+  // 1. Verificar se já existe registro com essa chave no Supabase
+  if (supabase) {
+    try {
+      const { data: existing } = await supabase
+        .from('whatsapp_queue')
+        .select('*')
+        .eq('execution_key', msg.executionKey)
+        .maybeSingle();
+
+      if (existing) {
+        if (existing.status === 'sent') {
+          console.log(`[SupabaseAdmin] Mensagem com chave única ${msg.executionKey} já foi enviada anteriormente.`);
+          return {
+            success: true,
+            status: 'sent',
+            message: 'Mensagem enviada com sucesso ao grupo. ✅',
+            id: existing.id,
+          };
+        }
+        if (existing.status === 'pending' || existing.status === 'processing') {
+          console.log(`[SupabaseAdmin] Mensagem com chave única ${msg.executionKey} já está na fila (status: ${existing.status}).`);
+          return {
+            success: true,
+            status: 'pending',
+            message: 'Mensagem adicionada à fila de envio. O WhatsApp fará o envio automaticamente.',
+            id: existing.id,
+          };
+        }
+        if (existing.status === 'failed') {
+          // Reativar mensagem para re-tentativa imediata
+          await supabase
+            .from('whatsapp_queue')
+            .update({
+              status: 'pending',
+              attempts: 0,
+              error: null,
+              scheduled_at: scheduledAt,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', existing.id);
+
+          return {
+            success: true,
+            status: 'pending',
+            message: 'Mensagem adicionada à fila de envio. O WhatsApp fará o envio automaticamente.',
+            id: existing.id,
+          };
+        }
       }
-      throw error;
+
+      const { data: inserted, error } = await supabase
+        .from('whatsapp_queue')
+        .insert([{
+          tipo: msg.tipo,
+          destino: msg.destino,
+          mensagem: msg.mensagem,
+          scheduled_at: scheduledAt,
+          status: 'pending',
+          execution_key: msg.executionKey,
+          attempts: 0,
+          max_attempts: 3,
+        }])
+        .select('id')
+        .single();
+
+      if (error) {
+        if (error.code === '23505') { // Chave única duplicada
+          return {
+            success: true,
+            status: 'pending',
+            message: 'Mensagem adicionada à fila de envio. O WhatsApp fará o envio automaticamente.',
+          };
+        }
+        throw error;
+      }
+
+      await addSystemLog('QUEUE_ENQUEUED', `Mensagem enfileirada com sucesso. Chave: ${msg.executionKey}`, 'info');
+      return {
+        success: true,
+        status: 'pending',
+        message: 'Mensagem adicionada à fila de envio. O WhatsApp fará o envio automaticamente.',
+        id: inserted?.id,
+      };
+    } catch (err: any) {
+      console.error('[SupabaseAdmin] Erro ao salvar fila no Supabase, usando fallback em memória:', err);
     }
-    await addSystemLog('QUEUE_ENQUEUED', `Mensagem enfileirada com sucesso. Chave: ${msg.executionKey}`, 'info');
-    return true;
-  } catch (err: any) {
-    console.error('[SupabaseAdmin] Erro ao enfileirar mensagem:', err);
-    return false;
   }
+
+  // 2. Fallback em memória caso o Supabase esteja temporariamente inacessível
+  const existingMem = (inMemoryState as any).queue?.find?.((q: any) => q.execution_key === msg.executionKey);
+  if (existingMem) {
+    if (existingMem.status === 'sent') {
+      return { success: true, status: 'sent', message: 'Mensagem enviada com sucesso ao grupo. ✅' };
+    }
+    return { success: true, status: 'pending', message: 'Mensagem adicionada à fila de envio. O WhatsApp fará o envio automaticamente.' };
+  }
+
+  if (!(inMemoryState as any).queue) {
+    (inMemoryState as any).queue = [];
+  }
+  const memItem = {
+    id: Date.now(),
+    tipo: msg.tipo,
+    destino: msg.destino,
+    mensagem: msg.mensagem,
+    scheduled_at: scheduledAt,
+    status: 'pending',
+    execution_key: msg.executionKey,
+    attempts: 0,
+    max_attempts: 3,
+    created_at: new Date().toISOString(),
+  };
+  (inMemoryState as any).queue.push(memItem);
+
+  return {
+    success: true,
+    status: 'pending',
+    message: 'Mensagem adicionada à fila de envio. O WhatsApp fará o envio automaticamente.',
+    id: memItem.id,
+  };
 }
 
 // Helper: Busca mensagens prontas para envio (scheduled_at <= agora e tentativas < limite)
 export async function getPendingQueueMessages(): Promise<any[]> {
   const supabase = getAdminSupabase();
-  if (!supabase) return [];
-  try {
-    const nowIso = new Date().toISOString();
-    const { data, error } = await supabase
-      .from('whatsapp_queue')
-      .select('*')
-      .in('status', ['pending', 'failed'])
-      .lte('scheduled_at', nowIso)
-      .lt('attempts', 3) // max_attempts = 3
-      .order('scheduled_at', { ascending: true });
+  if (supabase) {
+    try {
+      const nowIso = new Date().toISOString();
+      const { data, error } = await supabase
+        .from('whatsapp_queue')
+        .select('*')
+        .in('status', ['pending', 'failed'])
+        .lte('scheduled_at', nowIso)
+        .lt('attempts', 3) // max_attempts = 3
+        .order('scheduled_at', { ascending: true });
 
-    if (error) throw error;
-    return data || [];
-  } catch (err: any) {
-    console.error('[SupabaseAdmin] Erro ao carregar fila de mensagens:', err);
-    return [];
+      if (!error && data) {
+        return data;
+      }
+    } catch (err: any) {
+      console.error('[SupabaseAdmin] Erro ao carregar fila de mensagens do Supabase:', err);
+    }
   }
+
+  // Fallback em memória
+  const queueMem = (inMemoryState as any).queue || [];
+  const nowIso = new Date().toISOString();
+  return queueMem.filter((item: any) => 
+    (item.status === 'pending' || item.status === 'failed') &&
+    item.attempts < (item.max_attempts || 3) &&
+    item.scheduled_at <= nowIso
+  );
 }
 
 // Helper: Tenta bloquear e atualizar o status de uma mensagem para processando antes do envio
 export async function lockQueueMessage(id: number): Promise<boolean> {
   const supabase = getAdminSupabase();
-  if (!supabase) return false;
-  try {
-    // Para evitar condições de corrida, garantimos que atualizamos apenas se o status for pending ou failed
-    const { data, error } = await supabase
-      .from('whatsapp_queue')
-      .update({
-        status: 'processing',
-        last_attempt_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', id)
-      .in('status', ['pending', 'failed'])
-      .select('id');
+  if (supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('whatsapp_queue')
+        .update({
+          status: 'processing',
+          last_attempt_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', id)
+        .in('status', ['pending', 'failed'])
+        .select('id');
 
-    if (error) throw error;
-    return !!(data && data.length > 0);
-  } catch (err) {
-    console.error('[SupabaseAdmin] Erro ao travar mensagem da fila:', err);
-    return false;
+      if (!error && data && data.length > 0) {
+        return true;
+      }
+    } catch (err) {
+      console.error('[SupabaseAdmin] Erro ao travar mensagem da fila no Supabase:', err);
+    }
   }
+
+  // Fallback em memória
+  const queueMem = (inMemoryState as any).queue || [];
+  const item = queueMem.find((q: any) => q.id === id);
+  if (item && (item.status === 'pending' || item.status === 'failed')) {
+    item.status = 'processing';
+    item.last_attempt_at = new Date().toISOString();
+    return true;
+  }
+  return false;
 }
 
 // Helper: Atualiza o status final (sucesso ou falha) de uma mensagem da fila
 export async function updateQueueMessageStatus(
   id: number,
-  status: 'sent' | 'failed',
+  status: 'sent' | 'failed' | 'pending',
   details: { error?: string; attempts: number }
 ): Promise<void> {
   const supabase = getAdminSupabase();
-  if (!supabase) return;
-  try {
-    const payload: any = {
-      status,
-      attempts: details.attempts,
-      error: details.error || null,
-      last_attempt_at: new Date().toISOString(),
-      updated_at: new Date().toISOString()
-    };
+  const nowIso = new Date().toISOString();
 
-    if (status === 'sent') {
-      payload.sent_at = new Date().toISOString();
+  if (supabase) {
+    try {
+      const payload: any = {
+        status,
+        attempts: details.attempts,
+        error: details.error || null,
+        last_attempt_at: nowIso,
+        updated_at: nowIso,
+      };
+
+      if (status === 'sent') {
+        payload.sent_at = nowIso;
+      }
+
+      await supabase
+        .from('whatsapp_queue')
+        .update(payload)
+        .eq('id', id);
+
+      await addSystemLog(
+        status === 'sent' ? 'QUEUE_SENT' : 'QUEUE_FAILED',
+        `Mensagem da fila id ${id} atualizada para ${status}. Tentativas: ${details.attempts}`,
+        status === 'sent' ? 'info' : 'error'
+      );
+    } catch (err) {
+      console.error('[SupabaseAdmin] Erro ao atualizar status da fila no Supabase:', err);
     }
+  }
 
-    await supabase
-      .from('whatsapp_queue')
-      .update(payload)
-      .eq('id', id);
-
-    await addSystemLog(
-      status === 'sent' ? 'QUEUE_SENT' : 'QUEUE_FAILED',
-      `Mensagem da fila id ${id} atualizada para ${status}. Tentativas: ${details.attempts}`,
-      status === 'sent' ? 'info' : 'error'
-    );
-  } catch (err) {
-    console.error('[SupabaseAdmin] Erro ao atualizar status da fila:', err);
+  // Fallback em memória
+  const queueMem = (inMemoryState as any).queue || [];
+  const item = queueMem.find((q: any) => q.id === id);
+  if (item) {
+    item.status = status;
+    item.attempts = details.attempts;
+    item.error = details.error || null;
+    item.last_attempt_at = nowIso;
+    if (status === 'sent') {
+      item.sent_at = nowIso;
+    }
   }
 }
 
