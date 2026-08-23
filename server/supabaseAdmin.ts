@@ -593,3 +593,49 @@ export async function updateQueueMessageStatus(
     console.error('[SupabaseAdmin] Erro ao atualizar status da fila:', err);
   }
 }
+
+// Helper: Grava o estado atual da sessão do WhatsApp na tabela whatsapp_sessions
+export async function updateWhatsAppSessionInDb(session: WhatsAppSessionInfo): Promise<void> {
+  inMemoryState.session = { ...session };
+  const supabase = getAdminSupabase();
+  if (!supabase) return;
+  try {
+    await supabase.from('whatsapp_sessions').upsert({
+      id: 'default',
+      status: session.status,
+      phone_number: session.phoneNumber || null,
+      qr_code: session.qrCode || null,
+      last_error: session.error || null,
+      last_connected_at: session.lastConnected || null,
+      updated_at: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('[SupabaseAdmin] Erro ao atualizar whatsapp_sessions no Supabase:', err);
+  }
+}
+
+// Helper: Obtém o estado da sessão gravado
+export async function getWhatsAppSessionFromDb(): Promise<WhatsAppSessionInfo> {
+  const supabase = getAdminSupabase();
+  if (supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('whatsapp_sessions')
+        .select('*')
+        .eq('id', 'default')
+        .maybeSingle();
+
+      if (!error && data) {
+        return {
+          status: data.status || 'disconnected',
+          phoneNumber: data.phone_number || null,
+          qrCode: data.qr_code || null,
+          error: data.last_error || null,
+          lastConnected: data.last_connected_at || null,
+        };
+      }
+    } catch (e) {}
+  }
+  return inMemoryState.session;
+}
+
