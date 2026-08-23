@@ -6,7 +6,7 @@
 # Substitua a URL abaixo pela URL real gerada pelo Render (Único local de configuração)
 [[redirects]]
   from = "/api/whatsapp/*"
-  to = "RENDER_BACKEND_URL_AQUI/api/whatsapp/:splat"
+  to = "https://pesadao.onrender.com/api/whatsapp/:splat"
   status = 200
   force = true
 
