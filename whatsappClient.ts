@@ -4,6 +4,12 @@ import { getSupabase } from './supabaseClient';
 const PROD_CLOUD_BACKEND = 'https://ais-pre-ybjbk7lhnyuayauhjkdylp-92263901255.us-west1.run.app';
 
 export function getBackendUrl(): string {
+  if (typeof window !== 'undefined') {
+    const host = window.location.hostname;
+    if (host === 'localhost' || host === '127.0.0.1' || host.includes('run.app')) {
+      return '';
+    }
+  }
   if (typeof localStorage !== 'undefined') {
     const saved = localStorage.getItem('whatsapp_backend_url');
     if (saved && saved.trim()) return saved.trim();
@@ -13,7 +19,7 @@ export function getBackendUrl(): string {
       return (import.meta as any).env.VITE_WHATSAPP_API_URL.trim();
     }
   } catch (e) {}
-  return '';
+  return 'https://pesadao2-l0r2n4b7.b4a.run';
 }
 
 export function setBackendUrl(url: string): void {
@@ -27,6 +33,11 @@ export function setBackendUrl(url: string): void {
 }
 
 function getApiBase(): string {
+  const backend = getBackendUrl();
+  if (backend) {
+    if (backend.endsWith('/api/whatsapp')) return backend;
+    return `${backend.replace(/\/$/, '')}/api/whatsapp`;
+  }
   return '/api/whatsapp';
 }
 

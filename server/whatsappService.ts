@@ -213,7 +213,8 @@ class WhatsAppService {
         console.log('[WhatsAppService] Reconexão automática sob demanda concluída com sucesso!');
         return true;
       }
-      if (this.status === 'disconnected' && !this.isConnecting && this.reconnectAttempts === 0) {
+      if (this.status === 'qr_ready' || this.status === 'error' || (this.status === 'disconnected' && !this.isConnecting)) {
+        console.log(`[WhatsAppService] Abortando espera de conexão automática, status atual: ${this.status}`);
         break;
       }
       await new Promise(resolve => setTimeout(resolve, 500));
