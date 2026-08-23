@@ -58,6 +58,14 @@ class WhatsAppService {
       return this.getSessionInfo();
     }
 
+    if (this.sock) {
+      try {
+        this.sock.ev.removeAllListeners('connection.update');
+        this.sock.ev.removeAllListeners('creds.update');
+        this.sock.end(undefined);
+      } catch (e) {}
+    }
+
     this.isConnecting = true;
     this.status = 'connecting';
     this.lastError = null;
@@ -84,6 +92,9 @@ class WhatsAppService {
         connectTimeoutMs: 60_000,
         defaultQueryTimeoutMs: 60_000,
         keepAliveIntervalMs: 25_000,
+        syncFullHistory: false,
+        generateHighQualityLinkPreview: false,
+        markOnlineOnConnect: false,
       });
 
       this.sock.ev.on('creds.update', saveCreds);

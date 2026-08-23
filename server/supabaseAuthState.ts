@@ -13,9 +13,13 @@ const KEY_MAP: { [T in keyof SignalDataTypeMap]: string } = {
 export const useSupabaseAuthState = async (
   supabase: SupabaseClient
 ): Promise<{ state: AuthenticationState; saveCreds: () => Promise<void>; clearState: () => Promise<void> }> => {
+  
+  // Mem cache to prevent race conditions during rapid Baileys restarts
+  const memCache = new Map<string, any>();
 
   const writeData = async (data: any, id: string) => {
     try {
+      memCache.set(id, data);
       const informationToStore = JSON.parse(JSON.stringify(data, BufferJSON.replacer));
       await supabase
         .from('whatsapp_auth')
@@ -27,14 +31,18 @@ export const useSupabaseAuthState = async (
 
   const readData = async (id: string) => {
     try {
+      if (memCache.has(id)) {
+        return memCache.get(id);
+      }
       const { data, error } = await supabase
         .from('whatsapp_auth')
         .select('data')
         .eq('id', id)
         .single();
-
       if (error || !data) return null;
-      return JSON.parse(JSON.stringify(data.data), BufferJSON.reviver);
+      const parsed = JSON.parse(JSON.stringify(data.data), BufferJSON.reviver);
+      memCache.set(id, parsed);
+      return parsed;
     } catch (error) {
       return null;
     }
@@ -42,6 +50,7 @@ export const useSupabaseAuthState = async (
 
   const removeData = async (id: string) => {
     try {
+      memCache.delete(id);
       await supabase.from('whatsapp_auth').delete().eq('id', id);
     } catch (error) {
       console.error('Error removing auth state from Supabase:', error);
@@ -50,9 +59,7 @@ export const useSupabaseAuthState = async (
   
   const clearState = async () => {
     try {
-      // Deletes all rows to clear auth state
-      await supabase.from('whatsapp_auth').delete().neq('id', 'placeholder_do_not_delete_all_this_way_if_multiple_sessions');
-      // A better way for single session:
+      memCache.clear();
       const { data } = await supabase.from('whatsapp_auth').select('id');
       if (data) {
         for (const row of data) {
