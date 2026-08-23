@@ -19,7 +19,7 @@ import {
   getMatchesFromDb,
   getAdminSupabase,
 } from './supabaseAdmin';
-import { useSupabaseAuthState } from './supabaseAuthState';
+import { useSupabaseAuthState, memCache } from './supabaseAuthState';
 import { WhatsAppGroup, WhatsAppSessionInfo, WhatsAppConfig } from '../types';
 
 class WhatsAppService {
@@ -232,6 +232,7 @@ class WhatsAppService {
 
   private async clearAuthFiles() {
     try {
+      memCache.clear();
       const supabase = getAdminSupabase();
       if (supabase) {
         await supabase.from('whatsapp_auth').delete().neq('id', 'placeholder_for_delete_all');

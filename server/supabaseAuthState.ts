@@ -10,13 +10,13 @@ const KEY_MAP: { [T in keyof SignalDataTypeMap]: string } = {
   'sender-key-memory': 'senderKeyMemory'
 };
 
+// Global mem cache to prevent race conditions during rapid Baileys restarts
+export const memCache = new Map<string, any>();
+
 export const useSupabaseAuthState = async (
   supabase: SupabaseClient
 ): Promise<{ state: AuthenticationState; saveCreds: () => Promise<void>; clearState: () => Promise<void> }> => {
   
-  // Mem cache to prevent race conditions during rapid Baileys restarts
-  const memCache = new Map<string, any>();
-
   const writeData = async (data: any, id: string) => {
     try {
       memCache.set(id, data);
