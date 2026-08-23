@@ -78,31 +78,44 @@ export const useSupabaseAuthState = async (
       keys: {
         get: async (type, ids) => {
           const data: { [id: string]: any } = {};
-          await Promise.all(
-            ids.map(async (id) => {
-              let value = await readData(`${KEY_MAP[type]}-${id}`);
-              if (type === 'app-state-sync-key' && value) {
-                value = proto.Message.AppStateSyncKeyData.fromObject(value);
-              }
-              data[id] = value;
-            })
-          );
+          for (const id of ids) {
+            let value = await readData(`${KEY_MAP[type]}-${id}`);
+            if (type === 'app-state-sync-key' && value) {
+              value = proto.Message.AppStateSyncKeyData.fromObject(value);
+            }
+            data[id] = value;
+          }
           return data;
         },
         set: async (data) => {
-          const tasks: Promise<void>[] = [];
+          const tasks: (() => Promise<void>)[] = [];
           for (const category in data) {
             for (const id in data[category as keyof SignalDataTypeMap]) {
               const value = data[category as keyof SignalDataTypeMap]?.[id];
               const key = `${KEY_MAP[category as keyof SignalDataTypeMap]}-${id}`;
               if (value) {
-                tasks.push(writeData(value, key));
+                memCache.set(key, value);
+                tasks.push(async () => {
+                  try {
+                    const informationToStore = JSON.parse(JSON.stringify(value, BufferJSON.replacer));
+                    await supabase.from('whatsapp_auth').upsert({ id: key, data: informationToStore, updated_at: new Date().toISOString() });
+                  } catch (e) {}
+                });
               } else {
-                tasks.push(removeData(key));
+                memCache.delete(key);
+                tasks.push(async () => {
+                  try {
+                    await supabase.from('whatsapp_auth').delete().eq('id', key);
+                  } catch (e) {}
+                });
               }
             }
           }
-          await Promise.all(tasks);
+          
+          // Process sequentially to prevent connection pool exhaustion
+          for (const task of tasks) {
+            await task();
+          }
         }
       }
     },
