@@ -1,5 +1,10 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { WhatsAppConfig, WhatsAppMessageLog, WhatsAppSystemLog, WhatsAppSessionInfo, BillingSchedule } from '../types';
+import WebSocket from 'ws';
+
+if (typeof globalThis.WebSocket === 'undefined') {
+  (globalThis as any).WebSocket = WebSocket;
+}
 
 export const SUPABASE_URL = process.env.SUPABASE_URL || 'https://udtjrhyblktpnbaynchw.supabase.co';
 export const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVkdGpyaHlibGt0cG5iYXluY2h3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ5MzEwMTEsImV4cCI6MjA4MDUwNzAxMX0.QgHFP-qaD_cZ_euwV41nxXsAwUpxjvg0QsWj43d0Qt8';

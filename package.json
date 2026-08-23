@@ -25,10 +25,12 @@
     "qrcode": "^1.5.4",
     "react": "^19.2.1",
     "react-dom": "^19.2.1",
-    "tsx": "^4.23.12"
+    "tsx": "^4.23.12",
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
+    "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^5.0.0",
     "typescript": "~5.8.2",
     "vite": "^6.2.0"
