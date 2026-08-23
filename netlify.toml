@@ -6,7 +6,7 @@
 # Substitua a URL abaixo pela URL real gerada pelo Back4app
 [[redirects]]
   from = "/api/whatsapp/*"
-  to = "https://COLOQUE_AQUI_SUA_URL_DO_BACK4APP.b4a.run/api/whatsapp/:splat"
+  to = "https://pesadao2-k2yik1lv.b4a.run/api/whatsapp/:splat"
   status = 200
   force = true
 
