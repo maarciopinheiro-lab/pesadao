@@ -73,7 +73,7 @@ export interface DashboardStats {
   dueDate: string;
 }
 
-export type WhatsAppStatus = 'disconnected' | 'connecting' | 'qr_ready' | 'connected' | 'error';
+export type WhatsAppStatus = 'disconnected' | 'connecting' | 'qr_ready' | 'pairing' | 'connected' | 'reconnecting' | 'error';
 
 export interface WhatsAppGroup {
   id: string;

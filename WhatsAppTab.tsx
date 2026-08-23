@@ -719,6 +719,18 @@ export const WhatsAppTab: React.FC<WhatsAppTabProps> = ({ players, selectedDate,
                   Conectando...
                 </span>
               )}
+              {session.status === 'pairing' && (
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider bg-purple-500/10 text-purple-500 border border-purple-500/20">
+                  <span className="w-2 h-2 rounded-full bg-purple-500 animate-ping"></span>
+                  Pareando com celular...
+                </span>
+              )}
+              {session.status === 'reconnecting' && (
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider bg-amber-500/10 text-amber-500 border border-amber-500/20">
+                  <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
+                  Reconectando...
+                </span>
+              )}
               {session.status === 'qr_ready' && (
                 <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider bg-blue-500/10 text-blue-500 border border-blue-500/20">
                   <span className="w-2 h-2 rounded-full bg-blue-500"></span>
@@ -741,6 +753,8 @@ export const WhatsAppTab: React.FC<WhatsAppTabProps> = ({ players, selectedDate,
             <p className="text-xs text-muted-light dark:text-muted-dark mt-1 font-medium">
               {session.status === 'connected'
                 ? `Número: ${session.phoneNumber || 'Ativo'} • Grupo Cobrança: ${config.groupName || 'Não definido'} • Grupo Jogo: ${config.matchGroupName || 'Não definido'}`
+                : session.status === 'pairing'
+                ? 'Pareando credenciais de criptografia com seu WhatsApp... Por favor, aguarde.'
                 : 'Conecte sua conta do WhatsApp para automatizar cobranças e relatórios de partidas nos seus grupos.'}
             </p>
           </div>
@@ -768,10 +782,19 @@ export const WhatsAppTab: React.FC<WhatsAppTabProps> = ({ players, selectedDate,
           ) : (
             <button
               onClick={handleConnect}
-              className="w-full lg:w-auto flex items-center justify-center gap-2 px-6 py-3 rounded-xl text-xs font-black uppercase tracking-wider bg-green-600 hover:bg-green-700 text-white shadow-lg shadow-green-600/20 active:scale-95 transition-all"
+              disabled={session.status === 'connecting' || session.status === 'qr_ready' || session.status === 'pairing' || session.status === 'reconnecting'}
+              className="w-full lg:w-auto flex items-center justify-center gap-2 px-6 py-3 rounded-xl text-xs font-black uppercase tracking-wider bg-green-600 hover:bg-green-700 text-white shadow-lg shadow-green-600/20 active:scale-95 transition-all disabled:opacity-60 disabled:cursor-not-allowed disabled:scale-100"
             >
               <span className="material-icons-outlined text-base">qr_code_scanner</span>
-              {session.status === 'qr_ready' ? 'Ver QR Code' : 'Conectar WhatsApp'}
+              {session.status === 'pairing'
+                ? 'Pareando com celular...'
+                : session.status === 'connecting'
+                ? 'Conectando...'
+                : session.status === 'reconnecting'
+                ? 'Reconectando...'
+                : session.status === 'qr_ready'
+                ? 'Aguardando Leitura...'
+                : 'Conectar WhatsApp'}
             </button>
           )}
         </div>
@@ -784,7 +807,7 @@ export const WhatsAppTab: React.FC<WhatsAppTabProps> = ({ players, selectedDate,
             <div className="flex flex-col items-center justify-center bg-white p-6 rounded-3xl shadow-inner border border-gray-200 max-w-[280px] mx-auto w-full">
               <img src={session.qrCode} alt="WhatsApp QR Code" className="w-56 h-56 object-contain" />
               <p className="text-[10px] font-black uppercase tracking-widest text-gray-500 mt-3 text-center">
-                Aguardando leitura no celular...
+                Aponte a câmera do WhatsApp aqui
               </p>
             </div>
             <div className="space-y-4">
@@ -818,15 +841,6 @@ export const WhatsAppTab: React.FC<WhatsAppTabProps> = ({ players, selectedDate,
                   </span>
                 </li>
               </ol>
-              <div className="pt-2 flex gap-3">
-                <button
-                  onClick={handleConnect}
-                  className="px-4 py-2 rounded-xl text-xs font-bold bg-white dark:bg-black/30 border border-gray-200 dark:border-gray-700 hover:bg-gray-100 flex items-center gap-2"
-                >
-                  <span className="material-icons-outlined text-sm">refresh</span>
-                  Gerar novo QR Code
-                </button>
-              </div>
             </div>
           </div>
         </div>
