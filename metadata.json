@@ -1,0 +1,6 @@
+{
+  "name": "APP Pesadão - Gestão & Automação WhatsApp",
+  "description": "Aplicativo de gestão de mensalidades, atletas, jogos e automação de cobranças semanais no WhatsApp para o time Pesadão F.C.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

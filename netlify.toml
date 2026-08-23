@@ -1,0 +1,17 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+# PROXY PARA O BACKEND NO BACK4APP CONTAINERS
+# Substitua a URL abaixo pela URL real gerada pelo Back4app
+[[redirects]]
+  from = "/api/whatsapp/*"
+  to = "https://COLOQUE_AQUI_SUA_URL_DO_BACK4APP.b4a.run/api/whatsapp/:splat"
+  status = 200
+  force = true
+
+# Fallback para o SPA React (deixe sempre por último para evitar erro 404)
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
