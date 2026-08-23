@@ -192,6 +192,36 @@ class WhatsAppService {
     }, delay);
   }
 
+  public async ensureConnected(timeoutMs = 12000): Promise<boolean> {
+    if (this.sock && this.status === 'connected') {
+      return true;
+    }
+
+    console.log('[WhatsAppService] Conexão inativa detectada ao realizar operação. Tentando reconectar automaticamente...');
+    
+    // Iniciar conexão se não estiver conectando
+    if (this.status !== 'connecting') {
+      this.connect().catch(err => {
+        console.error('[WhatsAppService] Falha ao tentar conectar sob demanda:', err);
+      });
+    }
+
+    // Aguardar até que mude para connected
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if (this.sock && this.status === 'connected') {
+        console.log('[WhatsAppService] Reconexão automática sob demanda concluída com sucesso!');
+        return true;
+      }
+      if (this.status === 'disconnected' && !this.isConnecting && this.reconnectAttempts === 0) {
+        break;
+      }
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+
+    return this.sock && this.status === 'connected';
+  }
+
   public async disconnect(): Promise<void> {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
@@ -244,8 +274,9 @@ class WhatsAppService {
   }
 
   public async getGroups(): Promise<WhatsAppGroup[]> {
-    if (!this.sock || this.status !== 'connected') {
-      throw new Error('WhatsApp não está conectado no momento.');
+    const isConnected = await this.ensureConnected();
+    if (!isConnected) {
+      throw new Error('WhatsApp não está conectado no momento. Por favor, verifique a conexão e o QR Code.');
     }
 
     try {
@@ -407,8 +438,9 @@ class WhatsAppService {
   }
 
   public async sendTestMessage(customTemplate?: string, clientPlayers?: any[], targetMonthKey?: string): Promise<{ success: boolean; message: string }> {
-    if (!this.sock || this.status !== 'connected') {
-      throw new Error('WhatsApp não está conectado.');
+    const isConnected = await this.ensureConnected();
+    if (!isConnected) {
+      throw new Error('WhatsApp não está conectado. Por favor, reconecte o bot.');
     }
 
     const config = await getWhatsAppConfig();
@@ -567,8 +599,9 @@ _#PesadãoFC #FutebolDeDomingo #FamiliaPesadão_`;
   }
 
   public async sendMatchReport(matchData: any, customTemplate?: string, targetGroupId?: string): Promise<{ success: boolean; message: string }> {
-    if (!this.sock || this.status !== 'connected') {
-      throw new Error('WhatsApp não está conectado.');
+    const isConnected = await this.ensureConnected();
+    if (!isConnected) {
+      throw new Error('WhatsApp não está conectado. Reconectando automaticamente, tente enviar novamente em instantes.');
     }
 
     const config = await getWhatsAppConfig();
@@ -621,8 +654,9 @@ _#PesadãoFC #FutebolDeDomingo #FamiliaPesadão_`;
   }
 
   public async sendMatchTestMessage(): Promise<{ success: boolean; message: string }> {
-    if (!this.sock || this.status !== 'connected') {
-      throw new Error('WhatsApp não está conectado.');
+    const isConnected = await this.ensureConnected();
+    if (!isConnected) {
+      throw new Error('WhatsApp não está conectado. Por favor, reconecte o bot.');
     }
 
     const config = await getWhatsAppConfig();
@@ -700,7 +734,8 @@ _#PesadãoFC #FutebolDeDomingo #FamiliaPesadão_`;
       return { success: false, message: 'Automação está desativada.' };
     }
 
-    if (!this.sock || this.status !== 'connected') {
+    const isConnected = await this.ensureConnected();
+    if (!isConnected) {
       const errMsg = 'WhatsApp não está conectado para o envio de cobrança.';
       await addSystemLog('EXECUTION_SKIPPED', errMsg, 'warn');
       return { success: false, message: errMsg };

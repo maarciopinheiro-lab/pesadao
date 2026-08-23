@@ -538,25 +538,25 @@ export async function sendTestMessage(customTemplate?: string, players?: any[], 
   return await requestWhatsAppApi('/send-test', {
     method: 'POST',
     body: JSON.stringify({ customTemplate, players: sanitizePlayers(players), monthKey }),
-  }, 15000);
+  }, 35000);
 }
 
 export async function sendNow(customTemplate?: string, players?: any[], monthKey?: string, scheduleId?: string): Promise<{ success: boolean; message: string }> {
   return await requestWhatsAppApi('/send-now', {
     method: 'POST',
     body: JSON.stringify({ customTemplate, players: sanitizePlayers(players), monthKey, scheduleId }),
-  }, 15000);
+  }, 35000);
 }
 
 export async function sendMatchWhatsAppReport(matchData: any, template?: string, targetGroupId?: string): Promise<{ success: boolean; message: string }> {
   return await requestWhatsAppApi('/send-match', {
     method: 'POST',
     body: JSON.stringify({ matchData, template, targetGroupId }),
-  }, 15000);
+  }, 35000);
 }
 
 export async function sendMatchTestWhatsAppMessage(): Promise<{ success: boolean; message: string }> {
-  return await requestWhatsAppApi('/send-match-test', { method: 'POST' }, 15000);
+  return await requestWhatsAppApi('/send-match-test', { method: 'POST' }, 35000);
 }
 
 export async function getWhatsAppHistory(limit = 50): Promise<WhatsAppMessageLog[]> {
