@@ -24,14 +24,53 @@ async function startServer() {
 
   // --- API ROUTES ---
 
-  // Health check
+  // Health check e keep-alive do Render
   app.get('/api/health', (req, res) => {
     res.json({
       status: 'ok',
       service: 'APP Pesadão WhatsApp Automation API',
       timestamp: new Date().toISOString(),
+      session: whatsappService.getSessionInfo().status,
     });
   });
+
+  // Webhook Tick para Cron-Job.org / UptimeRobot / Render Keep-Alive (GET e POST)
+  const handleCronTick = async (req: express.Request, res: express.Response) => {
+    try {
+      console.log('[WebhookCron] Recebido sinal de keep-alive e processamento de agendamentos...');
+      
+      // 1. Verificar e disparar agendamentos semanais ativos devidos
+      const scheduleResult = await whatsappService.checkCronTrigger();
+      
+      // 2. Processar mensagens pendentes na fila
+      const queueResult = await whatsappService.processPendingQueue();
+
+      const session = whatsappService.getSessionInfo();
+      const brazilTime = new Date().toLocaleTimeString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+      const brazilDate = new Date().toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+
+      res.json({
+        success: true,
+        message: 'Ciclo de automação e verificação executado com sucesso.',
+        brazilDateTime: `${brazilDate} ${brazilTime}`,
+        sessionStatus: session.status,
+        phoneNumber: session.phoneNumber,
+        triggeredSchedules: scheduleResult.triggered,
+        scheduleDetails: scheduleResult.details,
+        queueProcessed: queueResult.processed,
+        queueFailures: queueResult.failures,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (err: any) {
+      console.error('[WebhookCron] Erro ao executar ciclo:', err);
+      res.status(500).json({ error: err.message || 'Erro ao processar ciclo de automação.' });
+    }
+  };
+
+  app.get('/api/whatsapp/cron-tick', handleCronTick);
+  app.post('/api/whatsapp/cron-tick', handleCronTick);
+  app.get('/api/cron', handleCronTick);
+  app.post('/api/cron', handleCronTick);
 
   // Endpoint seguro para o cron-job.org chamar
   app.post('/api/automation/run', async (req, res) => {

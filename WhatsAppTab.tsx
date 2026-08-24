@@ -200,7 +200,7 @@ export const WhatsAppTab: React.FC<WhatsAppTabProps> = ({ players, selectedDate,
   const [loadingGroups, setLoadingGroups] = useState(false);
   const [history, setHistory] = useState<WhatsAppMessageLog[]>([]);
   const [logs, setLogs] = useState<WhatsAppSystemLog[]>([]);
-  const [activeSubTab, setActiveSubTab] = useState<'config' | 'match_config' | 'history' | 'logs'>('config');
+  const [activeSubTab, setActiveSubTab] = useState<'config' | 'match_config' | 'render' | 'history' | 'logs'>('config');
 
   // Preview States
   const [liveBillingPreview, setLiveBillingPreview] = useState<string>('');
@@ -212,6 +212,8 @@ export const WhatsAppTab: React.FC<WhatsAppTabProps> = ({ players, selectedDate,
   const [sendingTest, setSendingTest] = useState(false);
   const [sendingMatchTest, setSendingMatchTest] = useState(false);
   const [sendingManual, setSendingManual] = useState(false);
+  const [runningCronTick, setRunningCronTick] = useState(false);
+  const [cronTickResult, setCronTickResult] = useState<any>(null);
   const [feedbackToast, setFeedbackToast] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
   const [showSwitchModal, setShowSwitchModal] = useState(false);
   const [selectedMessageForModal, setSelectedMessageForModal] = useState<WhatsAppMessageLog | null>(null);
@@ -635,6 +637,28 @@ export const WhatsAppTab: React.FC<WhatsAppTabProps> = ({ players, selectedDate,
     }
   };
 
+  const handleRunCronTick = async () => {
+    setRunningCronTick(true);
+    try {
+      const res = await fetch('/api/whatsapp/cron-tick');
+      const data = await res.json();
+      setCronTickResult(data);
+      if (data.success) {
+        showToast(
+          `Ciclo executado com sucesso! ${data.triggeredSchedules} disparo(s) efetuados, ${data.queueProcessed} mensagem(ns) enviada(s).`,
+          'success'
+        );
+        await refreshHistoryAndLogs();
+      } else {
+        showToast(data.error || 'Erro ao processar ciclo.', 'error');
+      }
+    } catch (err: any) {
+      showToast(err.message || 'Falha ao chamar ciclo.', 'error');
+    } finally {
+      setRunningCronTick(false);
+    }
+  };
+
   const insertBillingVariable = (variableName: string) => {
     if (!billingTextareaRef.current) return;
     const textarea = billingTextareaRef.current;
@@ -888,6 +912,20 @@ export const WhatsAppTab: React.FC<WhatsAppTabProps> = ({ players, selectedDate,
         >
           <span className="material-icons-outlined text-sm">sports_soccer</span>
           Configurações da Partida
+        </button>
+
+        <button
+          onClick={() => {
+            setActiveSubTab('render');
+          }}
+          className={`flex-1 sm:flex-none px-4 sm:px-5 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 whitespace-nowrap shrink-0 ${
+            activeSubTab === 'render'
+              ? 'bg-white dark:bg-gray-700 shadow text-primary font-black'
+              : 'text-muted-light hover:text-primary'
+          }`}
+        >
+          <span className="material-icons-outlined text-sm">cloud_sync</span>
+          Automação 24/7 (Render)
         </button>
 
         <button
@@ -1895,6 +1933,206 @@ export const WhatsAppTab: React.FC<WhatsAppTabProps> = ({ players, selectedDate,
                 </div>
                 <p className="text-[11px] leading-relaxed">
                   Ao preencher o placar e salvar o relatório no menu <strong>Jogos</strong>, o sistema exibirá automaticamente a opção de <strong>Compartilhar no WhatsApp</strong> com 1 clique direto para o grupo configurado.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* --- SUBTAB: AUTOMAÇÃO 24/7 E RENDER KEEP-ALIVE --- */}
+      {/* ========================================================================= */}
+      {activeSubTab === 'render' && (
+        <div className="space-y-6 animate-fade-in">
+          {/* CARD PRINCIPAL: STATUS & KEEP-ALIVE */}
+          <div className="bg-surface-light dark:bg-surface-dark rounded-3xl p-6 md:p-8 border border-gray-200 dark:border-gray-800 shadow-sm space-y-6">
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-gray-100 dark:border-gray-800 pb-4">
+              <div>
+                <h3 className="text-lg font-bold flex items-center gap-2">
+                  <span className="material-icons-outlined text-primary">cloud_sync</span>
+                  Automação 24/7 & Estabilidade no Render
+                </h3>
+                <p className="text-xs text-muted-light">
+                  Como garantir que o bot envie as mensagens mesmo com o app fechado e sem quedas.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleRunCronTick}
+                  disabled={runningCronTick}
+                  className="px-4 py-2.5 bg-primary hover:bg-primary-hover text-white text-xs font-black uppercase tracking-wider rounded-xl transition-all shadow-lg shadow-primary/20 flex items-center gap-2"
+                >
+                  {runningCronTick ? (
+                    <span className="animate-spin border-2 border-white/20 border-t-white rounded-full w-4 h-4"></span>
+                  ) : (
+                    <>
+                      <span className="material-icons-outlined text-sm">play_arrow</span>
+                      Testar Ciclo Agora
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {/* STATUS GRID */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="p-4 rounded-2xl bg-gray-50 dark:bg-black/30 border border-gray-100 dark:border-gray-800 space-y-1">
+                <span className="text-[10px] font-black uppercase tracking-widest text-muted-light">Status do WhatsApp</span>
+                <div className="flex items-center gap-2">
+                  <span className={`w-2.5 h-2.5 rounded-full ${session.status === 'connected' ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`}></span>
+                  <span className="text-xs font-bold capitalize">{session.status === 'connected' ? 'Online e Pronto' : session.status}</span>
+                </div>
+                <p className="text-[10px] text-muted-light font-mono truncate">{session.phoneNumber || 'Sem número'}</p>
+              </div>
+
+              <div className="p-4 rounded-2xl bg-gray-50 dark:bg-black/30 border border-gray-100 dark:border-gray-800 space-y-1">
+                <span className="text-[10px] font-black uppercase tracking-widest text-muted-light">Fuso Horário</span>
+                <div className="flex items-center gap-2">
+                  <span className="material-icons-outlined text-sm text-primary">schedule</span>
+                  <span className="text-xs font-bold">Brasília (GMT-3)</span>
+                </div>
+                <p className="text-[10px] text-muted-light">Sincronizado automaticamente</p>
+              </div>
+
+              <div className="p-4 rounded-2xl bg-gray-50 dark:bg-black/30 border border-gray-100 dark:border-gray-800 space-y-1">
+                <span className="text-[10px] font-black uppercase tracking-widest text-muted-light">Keep-Alive Interno</span>
+                <div className="flex items-center gap-2">
+                  <span className="material-icons-outlined text-sm text-green-500">bolt</span>
+                  <span className="text-xs font-bold text-green-600 dark:text-green-400">Ativo (25 segundos)</span>
+                </div>
+                <p className="text-[10px] text-muted-light">Evita timeout do WebSocket</p>
+              </div>
+
+              <div className="p-4 rounded-2xl bg-gray-50 dark:bg-black/30 border border-gray-100 dark:border-gray-800 space-y-1">
+                <span className="text-[10px] font-black uppercase tracking-widest text-muted-light">Disparos Programados</span>
+                <div className="flex items-center gap-2">
+                  <span className="material-icons-outlined text-sm text-yellow-500">alarm</span>
+                  <span className="text-xs font-bold">
+                    {currentSchedules.filter((s) => s.enabled).length} de {currentSchedules.length} Ativos
+                  </span>
+                </div>
+                <p className="text-[10px] text-muted-light">
+                  {config.isActive ? 'Automação ativada' : 'Automação pausada'}
+                </p>
+              </div>
+            </div>
+
+            {/* RESULTADO DO TESTE DO CRON */}
+            {cronTickResult && (
+              <div className="p-4 rounded-2xl bg-green-500/10 border border-green-500/20 text-xs space-y-2 animate-fade-in">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-green-600 dark:text-green-400 flex items-center gap-2">
+                    <span className="material-icons-outlined text-sm">check_circle</span>
+                    Último Ciclo Executado: {cronTickResult.brazilDateTime || cronTickResult.timestamp}
+                  </span>
+                  <span className="text-[10px] font-mono text-muted-light">
+                    Status: {cronTickResult.sessionStatus}
+                  </span>
+                </div>
+                <div className="text-[11px] text-gray-700 dark:text-gray-300 space-y-1">
+                  <p>• Disparos efetuados agora: <strong>{cronTickResult.triggeredSchedules || 0}</strong></p>
+                  <p>• Mensagens processadas na fila: <strong>{cronTickResult.queueProcessed || 0}</strong></p>
+                  {cronTickResult.scheduleDetails && (
+                    <div className="mt-2 pl-2 border-l-2 border-green-500/40 space-y-0.5 font-mono text-[10px]">
+                      {cronTickResult.scheduleDetails.map((det: string, idx: number) => (
+                        <div key={idx}>{det}</div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* CARD: GUIA DO CRON EXTERNO PARA O RENDER */}
+          <div className="bg-surface-light dark:bg-surface-dark rounded-3xl p-6 md:p-8 border border-gray-200 dark:border-gray-800 shadow-sm space-y-6">
+            <div className="space-y-1">
+              <h4 className="text-base font-bold flex items-center gap-2 text-primary">
+                <span className="material-icons-outlined">wifi_tethering</span>
+                Como manter o Render ativo 24/7 (Passo a Passo Gratuito)
+              </h4>
+              <p className="text-xs text-muted-light">
+                No plano gratuito do Render, o servidor entra em modo de hibernação (sleep) após 15 minutos sem acessos HTTP. Para que o bot envie mensagens mesmo com você dormindo e o computador desligado:
+              </p>
+            </div>
+
+            {/* URL DO WEBHOOK */}
+            <div className="space-y-2">
+              <label className="text-[10px] font-black uppercase text-muted-light tracking-widest block">
+                URL do Webhook do Bot (Copie e cole no Cron-Job.org ou UptimeRobot):
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  readOnly
+                  value={typeof window !== 'undefined' ? `${window.location.origin}/api/whatsapp/cron-tick` : '/api/whatsapp/cron-tick'}
+                  className="flex-1 bg-gray-50 dark:bg-black/40 border border-gray-200 dark:border-gray-700 rounded-xl p-3 font-mono text-xs text-gray-800 dark:text-gray-200 outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    const url = typeof window !== 'undefined' ? `${window.location.origin}/api/whatsapp/cron-tick` : '/api/whatsapp/cron-tick';
+                    navigator.clipboard.writeText(url);
+                    showToast('URL do Webhook copiada para a área de transferência!', 'success');
+                  }}
+                  className="px-4 py-3 bg-gray-100 dark:bg-black/30 hover:bg-primary hover:text-white rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 border border-black/5"
+                >
+                  <span className="material-icons-outlined text-sm">content_copy</span>
+                  Copiar URL
+                </button>
+              </div>
+            </div>
+
+            {/* PASSO A PASSO */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
+              <div className="p-4 rounded-2xl bg-gray-50 dark:bg-black/20 border border-gray-100 dark:border-gray-800 space-y-2">
+                <div className="w-7 h-7 rounded-xl bg-primary text-white text-xs font-black flex items-center justify-center">
+                  1
+                </div>
+                <h5 className="text-xs font-bold">Crie uma conta gratuita</h5>
+                <p className="text-[11px] text-muted-light leading-relaxed">
+                  Acesse{' '}
+                  <a
+                    href="https://cron-job.org"
+                    target="_blank"
+                    rel="noreferrer noopener"
+                    className="text-primary underline font-bold"
+                  >
+                    cron-job.org
+                  </a>{' '}
+                  ou{' '}
+                  <a
+                    href="https://uptimerobot.com"
+                    target="_blank"
+                    rel="noreferrer noopener"
+                    className="text-primary underline font-bold"
+                  >
+                    uptimerobot.com
+                  </a>{' '}
+                  (100% gratuito).
+                </p>
+              </div>
+
+              <div className="p-4 rounded-2xl bg-gray-50 dark:bg-black/20 border border-gray-100 dark:border-gray-800 space-y-2">
+                <div className="w-7 h-7 rounded-xl bg-primary text-white text-xs font-black flex items-center justify-center">
+                  2
+                </div>
+                <h5 className="text-xs font-bold">Crie um Cronjob / Monitor</h5>
+                <p className="text-[11px] text-muted-light leading-relaxed">
+                  Cole a <strong>URL do Webhook</strong> acima no campo URL e defina a frequência para <strong>a cada 5 ou 10 minutos</strong>.
+                </p>
+              </div>
+
+              <div className="p-4 rounded-2xl bg-gray-50 dark:bg-black/20 border border-gray-100 dark:border-gray-800 space-y-2">
+                <div className="w-7 h-7 rounded-xl bg-primary text-white text-xs font-black flex items-center justify-center">
+                  3
+                </div>
+                <h5 className="text-xs font-bold">Pronto! Bot 100% Sempre Ativo</h5>
+                <p className="text-[11px] text-muted-light leading-relaxed">
+                  O cron externo chamará o webhook periodicamente, mantendo o Render acordado e garantindo os envios no minuto exato.
                 </p>
               </div>
             </div>

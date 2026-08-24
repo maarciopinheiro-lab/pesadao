@@ -58,12 +58,29 @@ class WhatsAppService {
   private isProcessingQueue = false;
   private isManualDisconnect = false;
 
+  private keepAliveInterval: NodeJS.Timeout | null = null;
+
   constructor() {
     this.initCron();
+    this.startKeepAlive();
     // Auto-resume único no boot se existirem credenciais salvas no Supabase
     setTimeout(() => {
       this.tryAutoResumeConnection();
     }, 1500);
+  }
+
+  private startKeepAlive() {
+    if (this.keepAliveInterval) {
+      clearInterval(this.keepAliveInterval);
+    }
+    // Ping a cada 25 segundos para manter o túnel TCP do WebSocket aberto no Render e firewalls
+    this.keepAliveInterval = setInterval(() => {
+      if (this.sock && this.status === 'connected') {
+        try {
+          this.sock.sendPresenceUpdate('available').catch(() => {});
+        } catch (e) {}
+      }
+    }, 25000);
   }
 
   private async tryAutoResumeConnection() {
@@ -287,19 +304,26 @@ class WhatsAppService {
               });
             }, 1500);
           } else {
-            // Verificar se o usuário já estava autenticado com número
-            const wasAuthenticated = Boolean(this.phoneNumber && this.phoneNumber !== 'Conectado');
-            if (wasAuthenticated) {
-              if (this.reconnectAttempts < 5) {
+            // Verificar se o usuário já tem credenciais salvas no Supabase
+            let hasAuth = Boolean(this.phoneNumber && this.phoneNumber !== 'Conectado');
+            if (!hasAuth) {
+              try {
+                const { hasSavedAuth } = await useSupabaseAuthState(supabase);
+                hasAuth = await hasSavedAuth();
+              } catch (e) {}
+            }
+
+            if (hasAuth) {
+              if (this.reconnectAttempts < 8) {
                 this.status = 'reconnecting';
-                this.lastError = 'Conexão interrompida. Reconectando...';
+                this.lastError = 'Conexão interrompida. Reconectando automaticamente...';
                 await updateWhatsAppSessionInDb(this.getSessionInfo());
                 this.scheduleReconnect();
               } else {
-                console.log('[WhatsAppService] Limite de tentativas de reconexão atingido. Sessão colocada em repouso.');
+                console.log('[WhatsAppService] Tentativas recentes de reconexão pausadas. Auto-recuperação contínua será mantida pelo agendador.');
                 this.status = 'disconnected';
                 this.reconnectAttempts = 0;
-                this.lastError = 'Conexão interrompida. Clique em Conectar para restaurar o WhatsApp.';
+                this.lastError = 'Conexão temporariamente instável. O sistema tentará reconectar no próximo ciclo.';
                 await updateWhatsAppSessionInDb(this.getSessionInfo());
               }
             } else {
@@ -1092,9 +1116,12 @@ _#PesadãoFC #FutebolDeDomingo #FamiliaPesadão_`;
     console.log('[WhatsAppService] Agendador e processador da fila semanal inicializado.');
   }
 
-  private async checkCronTrigger() {
+  // Checa e dispara agendamentos semanais ativos de forma resiliente
+  public async checkCronTrigger(): Promise<{ triggered: number; details: string[] }> {
     const config = await getWhatsAppConfig();
-    if (!config.isActive || !config.groupId) return;
+    if (!config.isActive || !config.groupId) {
+      return { triggered: 0, details: ['Automação inativa ou sem grupo configurado.'] };
+    }
 
     // Obter data/hora atual no fuso horário de Brasília
     const now = new Date();
@@ -1108,6 +1135,7 @@ _#PesadãoFC #FutebolDeDomingo #FamiliaPesadão_`;
     // Dia da semana em SP (0 = Domingo, 1 = Segunda, ..., 6 = Sábado)
     const brazilDay = new Date(now.toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' })).getDay();
     const [currentHour, currentMinute] = brazilTimeStr.split(':').map(Number);
+    const currentMins = currentHour * 60 + currentMinute;
 
     const schedules = (config.schedules && config.schedules.length > 0)
       ? config.schedules
@@ -1122,16 +1150,41 @@ _#PesadãoFC #FutebolDeDomingo #FamiliaPesadão_`;
           },
         ];
 
+    const baseWeek = this.getCurrentReferenceWeek();
+    let triggered = 0;
+    const details: string[] = [];
+
     for (const sched of schedules) {
-      if (!sched.enabled) continue;
+      if (!sched.enabled) {
+        details.push(`Slot #${sched.id} (${sched.title}): Desabilitado`);
+        continue;
+      }
 
       const [targetHour, targetMinute] = (sched.sendTime || '09:00').split(':').map(Number);
+      const targetMins = targetHour * 60 + targetMinute;
 
-      if (brazilDay === sched.dayOfWeek && currentHour === targetHour && currentMinute === targetMinute) {
-        console.log(`[WhatsAppService] Disparo programado correspondente (${sched.title || `Slot ${sched.id}`} - ${brazilTimeStr})! Executando envio...`);
-        await this.executeWeeklyBilling('auto', sched.messageTemplate, undefined, undefined, sched.id, sched.title);
+      // O disparo é devido se hoje é o dia da semana configurado e o horário atual já atingiu ou passou o horário marcado
+      const isDueToday = brazilDay === sched.dayOfWeek && currentMins >= targetMins;
+
+      if (isDueToday) {
+        const refWeek = `${baseWeek}_slot${sched.id}`;
+        const alreadySent = await hasMessageBeenSentThisWeek(config.groupId, refWeek);
+
+        if (!alreadySent) {
+          console.log(`[WhatsAppService] [CRON_TRIGGER_DUE] Executando disparo programado (${sched.title || `Slot ${sched.id}`} - ${brazilTimeStr}) para grupo ${config.groupId}`);
+          await this.executeWeeklyBilling('auto', sched.messageTemplate, undefined, undefined, sched.id, sched.title);
+          triggered++;
+          details.push(`Slot #${sched.id} (${sched.title}): Disparado agora às ${brazilTimeStr}`);
+        } else {
+          details.push(`Slot #${sched.id} (${sched.title}): Já enviado esta semana (${refWeek})`);
+        }
+      } else {
+        const dayNames = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
+        details.push(`Slot #${sched.id} (${sched.title}): Programado para ${dayNames[sched.dayOfWeek]} às ${sched.sendTime}`);
       }
     }
+
+    return { triggered, details };
   }
 }
 
