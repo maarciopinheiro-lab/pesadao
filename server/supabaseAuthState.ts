@@ -82,14 +82,9 @@ export const useSupabaseAuthState = async (
   const credsData = await readData('creds');
   const creds: AuthenticationCreds = credsData || initAuthCreds();
 
-  // Salvar credenciais iniciais imediatamente no banco e cache se for primeira execução
-  if (!credsData) {
-    await writeData(creds, 'creds');
-  }
-
   const hasSavedAuth = async (): Promise<boolean> => {
     const currentCreds = await readData('creds');
-    return Boolean(currentCreds && (currentCreds.me?.id || currentCreds.registered));
+    return Boolean(currentCreds && currentCreds.me && currentCreds.me.id);
   };
 
   return {

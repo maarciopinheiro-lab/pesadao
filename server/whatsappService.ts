@@ -29,6 +29,18 @@ import {
 import { useSupabaseAuthState, memCache } from './supabaseAuthState';
 import { WhatsAppGroup, WhatsAppSessionInfo, WhatsAppConfig } from '../types';
 
+function normalizeJid(jid: string): string {
+  if (!jid) return '';
+  const clean = jid.trim();
+  if (clean.includes('@')) {
+    return clean.replace('@c.us', '@s.whatsapp.net');
+  }
+  if (clean.includes('-') || clean.length > 15) {
+    return `${clean}@g.us`;
+  }
+  return `${clean.replace(/\D/g, '')}@s.whatsapp.net`;
+}
+
 class WhatsAppService {
   private sock: WASocket | null = null;
   private qrCodeDataUrl: string | null = null;
@@ -44,6 +56,7 @@ class WhatsAppService {
   private reconnectInProgress = false;
   private pairingInProgress = false;
   private isProcessingQueue = false;
+  private isManualDisconnect = false;
 
   constructor() {
     this.initCron();
@@ -64,6 +77,8 @@ class WhatsAppService {
         await this.internalConnect(true);
       } else {
         console.log('[WhatsAppService] [AUTH_LOADED] Nenhuma sessão prévia autenticada. Aguardando comando do usuário.');
+        this.status = 'disconnected';
+        await updateWhatsAppSessionInDb(this.getSessionInfo());
       }
     } catch (e) {
       console.warn('[WhatsAppService] Falha ao verificar sessão salva no startup:', e);
@@ -233,6 +248,11 @@ class WhatsAppService {
 
         if (connection === 'close') {
           this.isConnecting = false;
+          if (this.isManualDisconnect) {
+            console.log('[WhatsAppService] [CONNECTION_CLOSED] Conexão finalizada manualmente pelo usuário.');
+            return;
+          }
+
           const statusCode = (lastDisconnect?.error as any)?.output?.statusCode;
           const isLoggedOut = statusCode === DisconnectReason.loggedOut || statusCode === 401 || statusCode === 403;
           const isRestartRequired = statusCode === DisconnectReason.restartRequired || statusCode === 515;
@@ -246,6 +266,7 @@ class WhatsAppService {
             this.rawQr = null;
             this.pairingInProgress = false;
             this.reconnectInProgress = false;
+            this.reconnectAttempts = 0;
             this.lastError = 'Sessão desconectada pelo WhatsApp.';
             console.log('[WhatsAppService] [LOGGED_OUT] Sessão finalizada. Limpando credenciais do Supabase...');
             await this.clearAuthFiles();
@@ -255,7 +276,7 @@ class WhatsAppService {
             // Código 515 emitido pelo WhatsApp logo após o escaneamento do QR Code
             this.status = 'pairing';
             this.pairingInProgress = true;
-            this.qrCodeDataUrl = null; // Remove QR Code antigo da tela pois já foi escaneado
+            this.qrCodeDataUrl = null;
             this.rawQr = null;
             console.log('[WhatsAppService] [PAIRING] WhatsApp solicitou reinício (515/RestartRequired após pareamento). Reconectando com novas credenciais...');
             await updateWhatsAppSessionInDb(this.getSessionInfo());
@@ -266,11 +287,33 @@ class WhatsAppService {
               });
             }, 1500);
           } else {
-            // Falha temporária de rede ou reset de conexão
-            this.status = 'reconnecting';
-            this.lastError = 'Conexão temporariamente interrompida. Reconectando...';
-            await updateWhatsAppSessionInDb(this.getSessionInfo());
-            this.scheduleReconnect();
+            // Verificar se o usuário já estava autenticado com número
+            const wasAuthenticated = Boolean(this.phoneNumber && this.phoneNumber !== 'Conectado');
+            if (wasAuthenticated) {
+              if (this.reconnectAttempts < 5) {
+                this.status = 'reconnecting';
+                this.lastError = 'Conexão interrompida. Reconectando...';
+                await updateWhatsAppSessionInDb(this.getSessionInfo());
+                this.scheduleReconnect();
+              } else {
+                console.log('[WhatsAppService] Limite de tentativas de reconexão atingido. Sessão colocada em repouso.');
+                this.status = 'disconnected';
+                this.reconnectAttempts = 0;
+                this.lastError = 'Conexão interrompida. Clique em Conectar para restaurar o WhatsApp.';
+                await updateWhatsAppSessionInDb(this.getSessionInfo());
+              }
+            } else {
+              // QR Code expirou ou conexão caiu antes de autenticar: NÃO entrar em loop
+              console.log('[WhatsAppService] Conexão não-autenticada encerrada (QR Code expirado ou timeout). Resetando estado.');
+              this.status = 'disconnected';
+              this.qrCodeDataUrl = null;
+              this.rawQr = null;
+              this.pairingInProgress = false;
+              this.reconnectInProgress = false;
+              this.reconnectAttempts = 0;
+              this.lastError = 'QR Code expirou. Clique em Conectar para gerar um novo QR Code.';
+              await updateWhatsAppSessionInDb(this.getSessionInfo());
+            }
           }
         }
       });
@@ -323,7 +366,7 @@ class WhatsAppService {
     console.log('[WhatsAppService] Conexão inativa detectada ao realizar operação. Tentando reconectar automaticamente...');
     
     // Iniciar conexão se não estiver conectando
-    if (this.status !== 'connecting') {
+    if (this.status !== 'connecting' && this.status !== 'pairing') {
       this.connect().catch(err => {
         console.error('[WhatsAppService] Falha ao tentar conectar sob demanda:', err);
       });
@@ -347,12 +390,15 @@ class WhatsAppService {
   }
 
   public async disconnect(): Promise<void> {
+    this.isManualDisconnect = true;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
     this.reconnectAttempts = 0;
+    this.reconnectInProgress = false;
     this.isConnecting = false;
+    this.pairingInProgress = false;
 
     if (this.sock) {
       try {
@@ -372,9 +418,11 @@ class WhatsAppService {
     this.qrCodeDataUrl = null;
     this.rawQr = null;
     this.lastError = null;
+    this.lastConnected = null;
 
     await updateWhatsAppSessionInDb(this.getSessionInfo());
     await addSystemLog('WHATSAPP_DISCONNECTED', 'WhatsApp desconectado com sucesso e credenciais limpas.', 'info');
+    this.isManualDisconnect = false;
   }
 
   public async switchNumber(): Promise<WhatsAppSessionInfo> {
@@ -389,7 +437,14 @@ class WhatsAppService {
       memCache.clear();
       const supabase = getAdminSupabase();
       if (supabase) {
-        await supabase.from('whatsapp_auth').delete().neq('id', 'placeholder_for_delete_all');
+        const { data } = await supabase.from('whatsapp_auth').select('id');
+        if (data && data.length > 0) {
+          const ids = data.map((r: any) => r.id);
+          for (let i = 0; i < ids.length; i += 50) {
+            const chunk = ids.slice(i, i + 50);
+            await supabase.from('whatsapp_auth').delete().in('id', chunk);
+          }
+        }
         console.log('[WhatsAppService] Credenciais de autenticação removidas do banco de dados.');
       }
     } catch (e) {
@@ -950,7 +1005,27 @@ _#PesadãoFC #FutebolDeDomingo #FamiliaPesadão_`;
 
         // Garantir conexão com o WhatsApp
         if (!this.sock || this.status !== 'connected') {
-          console.log('[WhatsAppService] WhatsApp desconectado. Tentando conectar para processamento da fila...');
+          console.log('[WhatsAppService] WhatsApp desconectado. Verificando se existe sessão autenticada...');
+          const supabase = getAdminSupabase();
+          let hasAuth = false;
+          if (supabase) {
+            try {
+              const { hasSavedAuth } = await useSupabaseAuthState(supabase);
+              hasAuth = await hasSavedAuth();
+            } catch (e) {}
+          }
+
+          if (!hasAuth) {
+            console.log('[WhatsAppService] Nenhuma sessão autenticada encontrada. Mensagem aguardará login do usuário.');
+            // Desbloquear a mensagem para quando o usuário conectar
+            await updateQueueMessageStatus(item.id, 'pending', {
+              error: 'Aguardando conexão do WhatsApp pelo usuário.',
+              attempts: item.attempts || 0
+            });
+            break;
+          }
+
+          console.log('[WhatsAppService] WhatsApp desconectado. Tentando reconectar para processamento da fila...');
           const connected = await this.ensureConnected(15000);
           if (!connected) {
             console.error('[WhatsAppService] Falha ao garantir conexão com o WhatsApp para envio da fila.');
@@ -964,8 +1039,9 @@ _#PesadãoFC #FutebolDeDomingo #FamiliaPesadão_`;
         }
 
         try {
-          // Enviar a mensagem
-          await this.sock.sendMessage(item.destino, { text: item.mensagem });
+          // Enviar a mensagem com JID normalizado (@g.us ou @s.whatsapp.net)
+          const targetJid = normalizeJid(item.destino);
+          await this.sock.sendMessage(targetJid, { text: item.mensagem });
 
           // Atualizar status na fila para sent
           await updateQueueMessageStatus(item.id, 'sent', {

@@ -783,22 +783,34 @@ export const WhatsAppTab: React.FC<WhatsAppTabProps> = ({ players, selectedDate,
               </button>
             </>
           ) : (
-            <button
-              onClick={handleConnect}
-              disabled={session.status === 'connecting' || session.status === 'qr_ready' || session.status === 'pairing' || session.status === 'reconnecting'}
-              className="w-full lg:w-auto flex items-center justify-center gap-2 px-6 py-3 rounded-xl text-xs font-black uppercase tracking-wider bg-green-600 hover:bg-green-700 text-white shadow-lg shadow-green-600/20 active:scale-95 transition-all disabled:opacity-60 disabled:cursor-not-allowed disabled:scale-100"
-            >
-              <span className="material-icons-outlined text-base">qr_code_scanner</span>
-              {session.status === 'pairing'
-                ? 'Pareando com celular...'
-                : session.status === 'connecting'
-                ? 'Conectando...'
-                : session.status === 'reconnecting'
-                ? 'Reconectando...'
-                : session.status === 'qr_ready'
-                ? 'Aguardando Leitura...'
-                : 'Conectar WhatsApp'}
-            </button>
+            <div className="flex items-center gap-2 w-full lg:w-auto">
+              <button
+                onClick={handleConnect}
+                disabled={session.status === 'connecting' || session.status === 'pairing'}
+                className="flex-1 lg:flex-none flex items-center justify-center gap-2 px-6 py-3 rounded-xl text-xs font-black uppercase tracking-wider bg-green-600 hover:bg-green-700 text-white shadow-lg shadow-green-600/20 active:scale-95 transition-all disabled:opacity-60 disabled:cursor-not-allowed disabled:scale-100"
+              >
+                <span className="material-icons-outlined text-base">qr_code_scanner</span>
+                {session.status === 'pairing'
+                  ? 'Pareando...'
+                  : session.status === 'connecting'
+                  ? 'Gerando QR...'
+                  : session.status === 'reconnecting'
+                  ? 'Reconectar'
+                  : session.status === 'qr_ready'
+                  ? 'Atualizar QR Code'
+                  : 'Conectar WhatsApp'}
+              </button>
+              {session.status !== 'disconnected' && (
+                <button
+                  onClick={handleDisconnect}
+                  title="Cancelar / Resetar Conexão"
+                  className="px-3 py-3 rounded-xl text-xs font-bold text-red-500 bg-red-500/10 hover:bg-red-500/20 transition-colors flex items-center justify-center gap-1"
+                >
+                  <span className="material-icons-outlined text-sm">close</span>
+                  <span className="hidden sm:inline">Resetar</span>
+                </button>
+              )}
+            </div>
           )}
         </div>
       </div>
