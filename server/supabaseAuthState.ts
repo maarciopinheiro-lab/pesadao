@@ -170,18 +170,28 @@ export const useSupabaseAuthState = async (
           if (toUpsert.length > 0) {
             for (let i = 0; i < toUpsert.length; i += 50) {
               const chunk = toUpsert.slice(i, i + 50);
-              await supabase.from('whatsapp_auth').upsert(chunk).catch(err => {
-                console.error('[WhatsAppAuth] Erro em batch upsert de chaves:', err);
-              });
+              try {
+                const { error } = await supabase.from('whatsapp_auth').upsert(chunk);
+                if (error) {
+                  console.error('[WhatsAppAuth] Erro em batch upsert de chaves:', error.message);
+                }
+              } catch (err) {
+                console.error('[WhatsAppAuth] Exceção em batch upsert de chaves:', err);
+              }
             }
           }
 
           if (toDelete.length > 0) {
             for (let i = 0; i < toDelete.length; i += 50) {
               const chunk = toDelete.slice(i, i + 50);
-              await supabase.from('whatsapp_auth').delete().in('id', chunk).catch(err => {
-                console.error('[WhatsAppAuth] Erro em batch delete de chaves:', err);
-              });
+              try {
+                const { error } = await supabase.from('whatsapp_auth').delete().in('id', chunk);
+                if (error) {
+                  console.error('[WhatsAppAuth] Erro em batch delete de chaves:', error.message);
+                }
+              } catch (err) {
+                console.error('[WhatsAppAuth] Exceção em batch delete de chaves:', err);
+              }
             }
           }
         }

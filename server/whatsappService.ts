@@ -271,12 +271,20 @@ class WhatsAppService {
           }
 
           const statusCode = (lastDisconnect?.error as any)?.output?.statusCode;
+          const errObj = lastDisconnect?.error;
+          const errString = errObj 
+            ? `${errObj.message || ''} ${errObj.stack || ''} ${typeof errObj === 'object' ? JSON.stringify(errObj) : String(errObj)}` 
+            : '';
+          const isBadMAC = errString.toLowerCase().includes('bad mac') || 
+                            errString.toLowerCase().includes('failed to decrypt') ||
+                            errString.toLowerCase().includes('decryption') ||
+                            errString.toLowerCase().includes('bad_mac');
           const isLoggedOut = statusCode === DisconnectReason.loggedOut || statusCode === 401 || statusCode === 403;
           const isRestartRequired = statusCode === DisconnectReason.restartRequired || statusCode === 515;
 
-          console.log(`[WhatsAppService] [CONNECTION_CLOSED] Conexão fechada. StatusCode: ${statusCode}, RestartRequired: ${isRestartRequired}, LoggedOut: ${isLoggedOut}`);
+          console.log(`[WhatsAppService] [CONNECTION_CLOSED] Conexão fechada. StatusCode: ${statusCode}, RestartRequired: ${isRestartRequired}, LoggedOut: ${isLoggedOut}, isBadMAC: ${isBadMAC}`);
 
-          if (isLoggedOut) {
+          if (isLoggedOut || isBadMAC) {
             this.status = 'disconnected';
             this.phoneNumber = null;
             this.qrCodeDataUrl = null;
@@ -284,11 +292,19 @@ class WhatsAppService {
             this.pairingInProgress = false;
             this.reconnectInProgress = false;
             this.reconnectAttempts = 0;
-            this.lastError = 'Sessão desconectada pelo WhatsApp.';
-            console.log('[WhatsAppService] [LOGGED_OUT] Sessão finalizada. Limpando credenciais do Supabase...');
+            this.lastError = isBadMAC 
+              ? 'Erro de sincronização de chaves (Bad MAC). Por segurança, realize um novo pareamento.'
+              : 'Sessão desconectada pelo WhatsApp.';
+            console.log(`[WhatsAppService] [LOGGED_OUT_OR_BAD_MAC] Sessão finalizada (isBadMAC: ${isBadMAC}). Limpando credenciais do Supabase...`);
             await this.clearAuthFiles();
             await updateWhatsAppSessionInDb(this.getSessionInfo());
-            await addSystemLog('WHATSAPP_LOGGED_OUT', 'A conta foi desconectada do WhatsApp.', 'warn');
+            await addSystemLog(
+              isBadMAC ? 'WHATSAPP_BAD_MAC' : 'WHATSAPP_LOGGED_OUT',
+              isBadMAC 
+                ? 'Sessão do WhatsApp reiniciada devido a erro de criptografia (Bad MAC). É necessário parear novamente.'
+                : 'A conta foi desconectada do WhatsApp.',
+              'warn'
+            );
           } else if (isRestartRequired) {
             // Código 515 emitido pelo WhatsApp logo após o escaneamento do QR Code
             this.status = 'pairing';
@@ -1085,14 +1101,46 @@ _#PesadãoFC #FutebolDeDomingo #FamiliaPesadão_`;
           processed++;
         } catch (err: any) {
           console.error(`[WhatsAppService] Falha ao enviar mensagem da fila id ${item.id}:`, err);
+          
+          const errString = err ? `${err.message || ''} ${err.stack || ''} ${typeof err === 'object' ? JSON.stringify(err) : String(err)}` : '';
+          const isSendBadMAC = errString.toLowerCase().includes('bad mac') || 
+                               errString.toLowerCase().includes('failed to decrypt') ||
+                               errString.toLowerCase().includes('decryption') ||
+                               errString.toLowerCase().includes('bad_mac');
+
+          if (isSendBadMAC) {
+            console.warn('[WhatsAppService] Erro crítico de criptografia (Bad MAC) detectado durante envio. Reiniciando sessão...');
+            this.status = 'disconnected';
+            this.phoneNumber = null;
+            this.qrCodeDataUrl = null;
+            this.rawQr = null;
+            this.pairingInProgress = false;
+            this.reconnectInProgress = false;
+            this.reconnectAttempts = 0;
+            this.lastError = 'Erro de sincronização de chaves (Bad MAC). Por segurança, realize um novo pareamento.';
+            
+            // Limpar chaves corrompidas do banco de dados e memória de forma assíncrona
+            this.clearAuthFiles().catch(e => console.error('[WhatsAppService] Erro ao limpar auth pós Bad-MAC:', e));
+            updateWhatsAppSessionInDb(this.getSessionInfo()).catch(e => console.error('[WhatsAppService] Erro ao atualizar sessão pós Bad-MAC:', e));
+            addSystemLog('WHATSAPP_BAD_MAC', 'Sessão do WhatsApp reiniciada devido a erro de criptografia (Bad MAC) durante envio. É necessário parear novamente.', 'warn')
+              .catch(e => console.error('[WhatsAppService] Erro ao registrar log de Bad-MAC:', e));
+          }
+
           const currentAttempts = (item.attempts || 0) + 1;
-          const nextStatus = currentAttempts >= (item.max_attempts || 3) ? 'failed' : 'pending';
+          const nextStatus = isSendBadMAC ? 'failed' : (currentAttempts >= (item.max_attempts || 3) ? 'failed' : 'pending');
 
           await updateQueueMessageStatus(item.id, nextStatus, {
-            error: err.message || 'Erro no envio via Baileys',
+            error: isSendBadMAC 
+              ? 'Falha crítica de criptografia (Bad MAC). A sessão foi desconectada.'
+              : (err.message || 'Erro no envio via Baileys'),
             attempts: currentAttempts
           });
           failures++;
+          
+          if (isSendBadMAC) {
+            // Interromper o processamento das próximas mensagens da fila, pois a sessão caiu
+            break;
+          }
         }
       }
 
