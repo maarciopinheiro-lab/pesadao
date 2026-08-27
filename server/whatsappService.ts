@@ -716,9 +716,10 @@ class WhatsAppService {
   }
 
   public getCurrentReferenceWeek(): string {
-    const now = new Date();
-    const year = now.getFullYear();
-    const week = this.getCurrentWeekNumber(now);
+    const { year, month, day } = this.getBrazilTimeInfo();
+    // Criar uma data determinística baseada no fuso horário de Brasília
+    const brazilDate = new Date(year, month - 1, day);
+    const week = this.getCurrentWeekNumber(brazilDate);
     return `${year}-W${week.toString().padStart(2, '0')}`;
   }
 
@@ -1239,7 +1240,7 @@ _#PesadãoFC #FutebolDeDomingo #FamiliaPesadão_`;
       return { triggered: 0, details: ['Nenhum grupo de WhatsApp configurado para os envios.'] };
     }
 
-    const { brazilDay, timeStr, currentMins } = this.getBrazilTimeInfo();
+    const { brazilDay, timeStr, currentMins, hour, minute } = this.getBrazilTimeInfo();
 
     const schedules = (config.schedules && config.schedules.length > 0)
       ? config.schedules
@@ -1289,6 +1290,12 @@ _#PesadãoFC #FutebolDeDomingo #FamiliaPesadão_`;
           triggered++;
           details.push(`Slot #${sched.id} (${sched.title}): Disparado com sucesso às ${timeStr}`);
         } else {
+          // Logar apenas no minuto exato para auditar sem entupir o banco de dados
+          const isExactlyNow = hour === targetHour && minute === targetMinute;
+          if (isExactlyNow) {
+            const skipMsg = `O disparo automático programado das ${sched.sendTime} (Slot #${sched.id} - ${sched.title}) foi ignorado nesta semana (${baseWeek}) para o grupo "${config.groupName || config.groupId}" porque o envio já foi realizado anteriormente (Chave de envio: ${refWeek}).`;
+            await addSystemLog('SCHEDULED_SKIPPED_DUPLICATE', skipMsg, 'info', { refWeek, groupId: config.groupId });
+          }
           details.push(`Slot #${sched.id} (${sched.title}): Já enviado esta semana (${refWeek})`);
         }
       } else {
