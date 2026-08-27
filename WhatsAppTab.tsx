@@ -269,14 +269,26 @@ export const WhatsAppTab: React.FC<WhatsAppTabProps> = ({ players, selectedDate,
     const anyActive = updatedList.some((s) => s.enabled);
     const s1 = updatedList[0];
 
-    setConfig((prev) => ({
-      ...prev,
+    const nextConfig = {
+      ...config,
       schedules: updatedList,
       isActive: anyActive,
-      dayOfWeek: s1 ? s1.dayOfWeek : prev.dayOfWeek,
-      sendTime: s1 ? s1.sendTime : prev.sendTime,
-      messageTemplate: s1 ? s1.messageTemplate : prev.messageTemplate,
-    }));
+      dayOfWeek: s1 ? s1.dayOfWeek : config.dayOfWeek,
+      sendTime: s1 ? s1.sendTime : config.sendTime,
+      messageTemplate: s1 ? s1.messageTemplate : config.messageTemplate,
+    };
+
+    setConfig(nextConfig);
+
+    // Auto-salvar no banco em background se for mudança de toggle, dropdown ou horário (instantâneo)
+    const isTextTyping = 'messageTemplate' in updates || 'title' in updates;
+    if (!isTextTyping) {
+      saveWhatsAppConfig(nextConfig)
+        .then(() => {
+          console.log('[AutoSave] Configurações de agendamento salvas.');
+        })
+        .catch((e) => console.warn('[AutoSave] Erro ao salvar agendamento:', e));
+    }
   };
 
   const restoreScheduleTemplate = (scheduleId: string) => {
@@ -1264,6 +1276,11 @@ export const WhatsAppTab: React.FC<WhatsAppTabProps> = ({ players, selectedDate,
                           type="text"
                           value={activeEditingSchedule.title}
                           onChange={(e) => updateSchedule(activeEditingSchedule.id, { title: e.target.value })}
+                          onBlur={() => {
+                            saveWhatsAppConfig(config)
+                              .then(() => console.log('[AutoSave] Título do disparo salvo.'))
+                              .catch(() => {});
+                          }}
                           placeholder="Ex: 1º Lembrete Leve"
                           className="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-3 text-xs font-bold outline-none focus:ring-2 focus:ring-primary/20"
                         />
@@ -1356,6 +1373,11 @@ export const WhatsAppTab: React.FC<WhatsAppTabProps> = ({ players, selectedDate,
                         rows={8}
                         value={activeEditingSchedule.messageTemplate}
                         onChange={(e) => updateSchedule(activeEditingSchedule.id, { messageTemplate: e.target.value })}
+                        onBlur={() => {
+                          saveWhatsAppConfig(config)
+                            .then(() => console.log('[AutoSave] Template de mensagem salvo.'))
+                            .catch(() => {});
+                        }}
                         className="w-full bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-2xl p-3.5 sm:p-4 text-xs font-mono font-medium focus:ring-2 focus:ring-primary/20 outline-none resize-y leading-relaxed"
                       />
                     </div>

@@ -717,7 +717,36 @@ const App: React.FC = () => {
 
       // 2. Gerar a mensagem sincronizada com o template e a lista de jogadores do elenco
       const prev = await previewMatchWhatsAppMessage(matchObj, templateToUse, players);
-      setMatchShareText(prev.preview || '');
+      const textPreview = prev.preview || '';
+      setMatchShareText(textPreview);
+
+      // 3. AUTO-ENVIO SE ESTIVER HABILITADO
+      if (c && c.matchAutoSend && textPreview) {
+        console.log('[WhatsApp] Auto-envio ativo para pós-jogo. Disparando relatório...');
+        const matchId = matchObj.id || matchObj.date || Date.now();
+        const idempotencyKey = `match_report_auto_${matchId}_${matchObj.homeScore ?? 0}x${matchObj.awayScore ?? 0}`;
+        
+        setSendingMatchReport(true);
+        try {
+          const res = await sendMatchWhatsAppReport(matchObj, textPreview, undefined, idempotencyKey);
+          console.log('[WhatsApp] Auto-envio pós-jogo concluído com sucesso:', res);
+          setMatchShareFeedback({ 
+            text: 'Relatório do jogo enviado automaticamente via Auto-Envio! ⚽🔥', 
+            type: 'success' 
+          });
+          setTimeout(() => {
+            setIsMatchShareModalOpen(false);
+          }, 2500);
+        } catch (autoErr: any) {
+          console.error('[WhatsApp] Falha no auto-envio pós-jogo:', autoErr);
+          setMatchShareFeedback({ 
+            text: 'Falha no Auto-Envio. Clique no botão verde abaixo para reenviar manualmente.', 
+            type: 'error' 
+          });
+        } finally {
+          setSendingMatchReport(false);
+        }
+      }
     } catch (e) {
       console.warn('Erro ao carregar prévia da mensagem:', e);
     }
