@@ -62,11 +62,24 @@ class WhatsAppService {
 
   constructor() {
     this.initCron();
-    this.startKeepAlive();
-    // Auto-resume único no boot se existirem credenciais salvas no Supabase
-    setTimeout(() => {
-      this.tryAutoResumeConnection();
-    }, 1500);
+    
+    // EVITAR CONFLITO DE INSTÂNCIAS (AI Studio vs Render):
+    // Se estivermos rodando no ambiente de desenvolvimento do AI Studio (detectado pelo APPLET_ID ou K_SERVICE),
+    // desativamos o keep-alive e auto-resume automáticos em segundo plano.
+    // Isso é crítico porque senão a instância de desenvolvimento aqui fica "derrubando" a conexão do servidor de produção no Render,
+    // criando um loop eterno de reconexões.
+    const isAIStudioPreview = !!process.env.APPLET_ID || !!process.env.K_SERVICE;
+    
+    if (isAIStudioPreview) {
+      console.log('[WhatsAppService] [AI_STUDIO_PREVIEW_DETECTED] Desativando auto-conexão e keep-alive automático em background para não derrubar a sua conexão ativa no Render.');
+      this.status = 'disconnected';
+    } else {
+      this.startKeepAlive();
+      // Auto-resume único no boot se existirem credenciais salvas no Supabase
+      setTimeout(() => {
+        this.tryAutoResumeConnection();
+      }, 1500);
+    }
   }
 
   private startKeepAlive() {
@@ -391,6 +404,17 @@ class WhatsAppService {
   }
 
   private scheduleReconnect() {
+    // Se estiver no AI Studio, cancelamos a reconexão automática em segundo plano para não "roubar" a sessão do seu Render.
+    const isAIStudioPreview = !!process.env.APPLET_ID || !!process.env.K_SERVICE;
+    if (isAIStudioPreview) {
+      console.log('[WhatsAppService] [RECONNECT_CANCELLED_IN_DEV] Reconexão automática em background cancelada no ambiente de testes para evitar derrubar o seu Render.');
+      this.status = 'disconnected';
+      this.reconnectInProgress = false;
+      this.isConnecting = false;
+      updateWhatsAppSessionInDb(this.getSessionInfo()).catch(() => {});
+      return;
+    }
+
     if (this.reconnectInProgress) {
       console.log('[WhatsAppService] [RECONNECT_IGNORED] Reconexão já agendada ou em andamento.');
       return;
@@ -1186,6 +1210,15 @@ _#PesadãoFC #FutebolDeDomingo #FamiliaPesadão_`;
   }
 
   private initCron() {
+    // Se estiver rodando no ambiente de desenvolvimento do AI Studio, nós NÃO iniciamos o cron automático de 1 minuto.
+    // Isso é essencial para que a nossa instância de testes aqui não processe a fila de mensagens ou envie agendamentos
+    // duplicados ao mesmo tempo que o seu servidor de produção oficial do Render está ligado e monitorando o banco.
+    const isAIStudioPreview = !!process.env.APPLET_ID || !!process.env.K_SERVICE;
+    if (isAIStudioPreview) {
+      console.log('[WhatsAppService] [AI_STUDIO_PREVIEW_DETECTED] Cron de checagem automática e envio em segundo plano desativado no ambiente de testes para evitar disparos duplicados ou conflitos com o Render.');
+      return;
+    }
+
     // Roda a cada minuto para checar se deve disparar cobrança e processar fila
     this.cronJob = cron.schedule('* * * * *', async () => {
       try {
