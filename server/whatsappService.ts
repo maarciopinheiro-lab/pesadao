@@ -72,15 +72,38 @@ class WhatsAppService {
   private startKeepAlive() {
     if (this.keepAliveInterval) {
       clearInterval(this.keepAliveInterval);
+      this.keepAliveInterval = null;
     }
-    // Ping a cada 25 segundos para manter o túnel TCP do WebSocket aberto no Render e firewalls
-    this.keepAliveInterval = setInterval(() => {
+    // Verificação de integridade e auto-recuperação (Self-Healing) gratuita a cada 30 segundos
+    this.keepAliveInterval = setInterval(async () => {
+      // 1. Se estiver conectado, enviar ping para manter o socket acordado
       if (this.sock && this.status === 'connected') {
         try {
-          this.sock.sendPresenceUpdate('available').catch(() => {});
+          const ws = (this.sock as any)?.ws;
+          if (ws && ws.readyState === 1 && typeof ws.ping === 'function') {
+            ws.ping();
+          }
         } catch (e) {}
+        return;
       }
-    }, 25000);
+
+      // 2. Auto-recuperação: se não estiver conectado, mas temos credenciais salvas no Supabase, reconectar silenciosamente
+      if (!this.isManualDisconnect && !this.isConnecting && this.status !== 'pairing' && this.status !== 'qr_ready') {
+        const supabase = getAdminSupabase();
+        if (supabase) {
+          try {
+            const { hasSavedAuth } = await useSupabaseAuthState(supabase);
+            const hasAuth = await hasSavedAuth();
+            if (hasAuth && (!this.sock || this.status !== 'connected')) {
+              console.log('[WhatsAppService] [SELF_HEALING] Sessão salva detectada no banco. Restaurando conexão automaticamente...');
+              this.internalConnect(true).catch((e) => {
+                console.warn('[WhatsAppService] [SELF_HEALING] Tentativa em background falhou, tentará no próximo ciclo:', e?.message);
+              });
+            }
+          } catch (e) {}
+        }
+      }
+    }, 30000);
   }
 
   private async tryAutoResumeConnection() {
@@ -112,6 +135,10 @@ class WhatsAppService {
     };
   }
 
+  public async getEffectiveSessionInfo(): Promise<WhatsAppSessionInfo> {
+    return this.getSessionInfo();
+  }
+
   private cleanOldSocket() {
     if (this.sock) {
       try {
@@ -125,17 +152,24 @@ class WhatsAppService {
 
   public async connect(force = false): Promise<WhatsAppSessionInfo> {
     // 1. Se já está conectado, retorna estado atual
-    if (this.sock && this.status === 'connected') {
+    if (!force && this.sock && this.status === 'connected') {
       console.log('[WhatsAppService] [CONNECT_IGNORED_ALREADY_RUNNING] WhatsApp já está conectado.');
       await updateWhatsAppSessionInDb(this.getSessionInfo());
       return this.getSessionInfo();
     }
 
-    // 2. Se já existe conexão ativa, QR Code válido, pareamento ou reconexão em andamento, protege contra chamadas duplicadas
-    if (!force && (this.isConnecting || this.status === 'connecting' || (this.status === 'qr_ready' && this.qrCodeDataUrl) || this.status === 'pairing' || this.status === 'reconnecting')) {
-      console.log(`[WhatsAppService] [CONNECT_IGNORED_ALREADY_RUNNING] Operação ignorada. Conexão já em andamento com status: ${this.status}`);
+    // 2. Se for chamado pelo usuário enquanto está conectando ou com QR pronto, e não for forçado, apenas retorna
+    if (!force && (this.isConnecting || this.status === 'connecting' || (this.status === 'qr_ready' && this.qrCodeDataUrl) || this.status === 'pairing')) {
+      console.log(`[WhatsAppService] [CONNECT_IGNORED_ALREADY_RUNNING] Operação em andamento com status: ${this.status}`);
       return this.getSessionInfo();
     }
+
+    // Se estava em reconexão ou se force=true, cancela timer de reconexão anterior e prossegue
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.reconnectInProgress = false;
 
     return await this.internalConnect(force);
   }
@@ -176,13 +210,18 @@ class WhatsAppService {
         logger: silentLogger,
         printQRInTerminal: false,
         auth: state,
-        browser: Browsers.ubuntu('Chrome'),
+        browser: Browsers.macOS('Desktop'),
         connectTimeoutMs: 60_000,
         defaultQueryTimeoutMs: 60_000,
         keepAliveIntervalMs: 25_000,
         syncFullHistory: false,
         generateHighQualityLinkPreview: false,
         markOnlineOnConnect: false,
+        retryRequestDelayMs: 500,
+        maxMsgRetryCount: 5,
+        getMessage: async () => {
+          return proto.Message.fromObject({});
+        },
       });
 
       console.log('[WhatsAppService] [SOCKET_CREATED] Instância WASocket criada com sucesso.');
@@ -261,6 +300,13 @@ class WhatsAppService {
             'info',
             { phoneNumber: this.phoneNumber }
           );
+
+          // Processar mensagens pendentes da fila que aguardavam conexão
+          setImmediate(() => {
+            this.processPendingQueue().catch((err) => {
+              console.error('[WhatsAppService] Erro ao processar fila pós-conexão:', err);
+            });
+          });
         }
 
         if (connection === 'close') {
@@ -271,20 +317,12 @@ class WhatsAppService {
           }
 
           const statusCode = (lastDisconnect?.error as any)?.output?.statusCode;
-          const errObj = lastDisconnect?.error;
-          const errString = errObj 
-            ? `${errObj.message || ''} ${errObj.stack || ''} ${typeof errObj === 'object' ? JSON.stringify(errObj) : String(errObj)}` 
-            : '';
-          const isBadMAC = errString.toLowerCase().includes('bad mac') || 
-                            errString.toLowerCase().includes('failed to decrypt') ||
-                            errString.toLowerCase().includes('decryption') ||
-                            errString.toLowerCase().includes('bad_mac');
           const isLoggedOut = statusCode === DisconnectReason.loggedOut || statusCode === 401 || statusCode === 403;
           const isRestartRequired = statusCode === DisconnectReason.restartRequired || statusCode === 515;
 
-          console.log(`[WhatsAppService] [CONNECTION_CLOSED] Conexão fechada. StatusCode: ${statusCode}, RestartRequired: ${isRestartRequired}, LoggedOut: ${isLoggedOut}, isBadMAC: ${isBadMAC}`);
+          console.log(`[WhatsAppService] [CONNECTION_CLOSED] Conexão fechada. StatusCode: ${statusCode}, RestartRequired: ${isRestartRequired}, LoggedOut: ${isLoggedOut}`);
 
-          if (isLoggedOut || isBadMAC) {
+          if (isLoggedOut) {
             this.status = 'disconnected';
             this.phoneNumber = null;
             this.qrCodeDataUrl = null;
@@ -292,17 +330,13 @@ class WhatsAppService {
             this.pairingInProgress = false;
             this.reconnectInProgress = false;
             this.reconnectAttempts = 0;
-            this.lastError = isBadMAC 
-              ? 'Erro de sincronização de chaves (Bad MAC). Por segurança, realize um novo pareamento.'
-              : 'Sessão desconectada pelo WhatsApp.';
-            console.log(`[WhatsAppService] [LOGGED_OUT_OR_BAD_MAC] Sessão finalizada (isBadMAC: ${isBadMAC}). Limpando credenciais do Supabase...`);
+            this.lastError = 'Sessão desconectada pelo aplicativo do WhatsApp no celular.';
+            console.log('[WhatsAppService] [LOGGED_OUT] Sessão desvinculada no celular. Limpando credenciais...');
             await this.clearAuthFiles();
             await updateWhatsAppSessionInDb(this.getSessionInfo());
             await addSystemLog(
-              isBadMAC ? 'WHATSAPP_BAD_MAC' : 'WHATSAPP_LOGGED_OUT',
-              isBadMAC 
-                ? 'Sessão do WhatsApp reiniciada devido a erro de criptografia (Bad MAC). É necessário parear novamente.'
-                : 'A conta foi desconectada do WhatsApp.',
+              'WHATSAPP_LOGGED_OUT',
+              'A conta foi desvinculada do WhatsApp pelo usuário.',
               'warn'
             );
           } else if (isRestartRequired) {
@@ -318,32 +352,18 @@ class WhatsAppService {
               this.internalConnect(true).catch((err) => {
                 console.error('[WhatsAppService] Erro ao reconectar pós-pareamento:', err);
               });
-            }, 1500);
+            }, 1000);
           } else {
-            // Verificar se o usuário já tem credenciais salvas no Supabase
-            let hasAuth = Boolean(this.phoneNumber && this.phoneNumber !== 'Conectado');
-            if (!hasAuth) {
-              try {
-                const { hasSavedAuth } = await useSupabaseAuthState(supabase);
-                hasAuth = await hasSavedAuth();
-              } catch (e) {}
-            }
+            // Desconexão temporária por rede / keepalive
+            const { hasSavedAuth } = await useSupabaseAuthState(supabase);
+            const hasAuth = await hasSavedAuth();
 
             if (hasAuth) {
-              if (this.reconnectAttempts < 8) {
-                this.status = 'reconnecting';
-                this.lastError = 'Conexão interrompida. Reconectando automaticamente...';
-                await updateWhatsAppSessionInDb(this.getSessionInfo());
-                this.scheduleReconnect();
-              } else {
-                console.log('[WhatsAppService] Tentativas recentes de reconexão pausadas. Auto-recuperação contínua será mantida pelo agendador.');
-                this.status = 'disconnected';
-                this.reconnectAttempts = 0;
-                this.lastError = 'Conexão temporariamente instável. O sistema tentará reconectar no próximo ciclo.';
-                await updateWhatsAppSessionInDb(this.getSessionInfo());
-              }
+              this.status = 'reconnecting';
+              this.lastError = 'Reconectando ao WhatsApp...';
+              await updateWhatsAppSessionInDb(this.getSessionInfo());
+              this.scheduleReconnect();
             } else {
-              // QR Code expirou ou conexão caiu antes de autenticar: NÃO entrar em loop
               console.log('[WhatsAppService] Conexão não-autenticada encerrada (QR Code expirado ou timeout). Resetando estado.');
               this.status = 'disconnected';
               this.qrCodeDataUrl = null;
@@ -380,11 +400,11 @@ class WhatsAppService {
       this.reconnectTimer = null;
     }
 
-    this.reconnectInProgress = true;
     this.reconnectAttempts++;
+    this.reconnectInProgress = true;
 
-    // Backoff progressivo: 2s, 5s, 10s, 20s
-    const backoffDelays = [2000, 5000, 10000, 20000];
+    // Backoff inteligente progressivo: 2s, 5s, 10s, 20s, 30s... (máximo 60s)
+    const backoffDelays = [2000, 5000, 10000, 20000, 30000, 60000];
     const delay = backoffDelays[Math.min(this.reconnectAttempts - 1, backoffDelays.length - 1)];
 
     console.log(`[WhatsAppService] [RECONNECT_SCHEDULED] Tentativa #${this.reconnectAttempts} agendada para daqui a ${delay}ms`);
@@ -493,15 +513,11 @@ class WhatsAppService {
   }
 
   public async getGroups(): Promise<WhatsAppGroup[]> {
-    const isConnected = await this.ensureConnected();
-    if (!isConnected) {
-      throw new Error('WhatsApp não está conectado no momento. Por favor, verifique a conexão e o QR Code.');
-    }
+    const supabase = getAdminSupabase();
 
-    let attempts = 0;
-    while (attempts < 3) {
+    // 1. Buscar grupos ao vivo se conectado via WhatsApp
+    if (this.sock && this.status === 'connected') {
       try {
-        attempts++;
         const groupsData = await this.sock.groupFetchAllParticipating();
         const groupsList: WhatsAppGroup[] = Object.values(groupsData).map((g: any) => ({
           id: g.id,
@@ -510,17 +526,43 @@ class WhatsAppService {
           desc: g.desc ? g.desc.toString() : undefined,
         }));
 
-        // Ordenar alfabeticamente
         groupsList.sort((a, b) => a.name.localeCompare(b.name));
+
+        // Salvar em cache no Supabase para acesso contínuo mesmo desconectado
+        if (supabase && groupsList.length > 0) {
+          supabase
+            .from('whatsapp_auth')
+            .upsert({
+              id: 'cached_whatsapp_groups',
+              data: groupsList,
+              updated_at: new Date().toISOString(),
+            })
+            .then(() => {})
+            .catch(() => {});
+        }
+
         return groupsList;
       } catch (err: any) {
-        console.warn(`[WhatsAppService] Tentativa ${attempts} de buscar grupos falhou:`, err?.message || err);
-        if (attempts >= 3) {
-          throw new Error(`Falha ao carregar lista de grupos: ${err?.message || err}`);
-        }
-        await new Promise((resolve) => setTimeout(resolve, 1500));
+        console.warn('[WhatsAppService] Falha ao buscar grupos ao vivo:', err?.message || err);
       }
     }
+
+    // 2. Se não estiver conectado ou falhar, recuperar do cache no Supabase
+    if (supabase) {
+      try {
+        const { data } = await supabase
+          .from('whatsapp_auth')
+          .select('data')
+          .eq('id', 'cached_whatsapp_groups')
+          .maybeSingle();
+
+        if (data && data.data && Array.isArray(data.data) && data.data.length > 0) {
+          console.log(`[WhatsAppService] Retornando ${data.data.length} grupos a partir do cache do Supabase.`);
+          return data.data;
+        }
+      } catch (e) {}
+    }
+
     return [];
   }
 
@@ -898,12 +940,13 @@ _#PesadãoFC #FutebolDeDomingo #FamiliaPesadão_`;
     targetMonthKey?: string,
     scheduleId?: string,
     scheduleTitle?: string,
-    idempotencyKey?: string
+    idempotencyKey?: string,
+    isScheduleEnabled = true
   ): Promise<{ success: boolean; status?: string; message: string }> {
     const config = await getWhatsAppConfig();
 
-    if (triggerType === 'auto' && !config.isActive) {
-      return { success: false, message: 'Automação está desativada.' };
+    if (triggerType === 'auto' && !isScheduleEnabled) {
+      return { success: false, message: 'Este disparo específico está desativado.' };
     }
 
     if (!config.groupId) {
@@ -925,7 +968,7 @@ _#PesadãoFC #FutebolDeDomingo #FamiliaPesadão_`;
     if (triggerType === 'auto') {
       const alreadySent = await hasMessageBeenSentThisWeek(config.groupId, refWeek);
       if (alreadySent) {
-        const msg = `Envio ignorado: Cobrança (${scheduleTitle || `Disparo ${scheduleId || 1}`}) já foi enviada nesta semana (${baseWeek}) para o grupo ${config.groupName}.`;
+        const msg = `Envio ignorado: Cobrança (${scheduleTitle || `Disparo ${scheduleId || 1}`}) já foi enviada nesta semana (${baseWeek}) para o grupo ${config.groupName || config.groupId}.`;
         await addSystemLog('SCHEDULED_SKIPPED_DUPLICATE', msg, 'info', { refWeek, groupId: config.groupId });
         return { success: true, status: 'sent', message: msg };
       }
@@ -940,6 +983,7 @@ _#PesadãoFC #FutebolDeDomingo #FamiliaPesadão_`;
       executionKey: executionKey,
     });
 
+    // Disparar processamento da fila imediatamente
     setImmediate(() => {
       this.processPendingQueue().catch((err) => {
         console.error('[WhatsAppService] Erro ao processar fila em background após cobrança:', err);
@@ -953,17 +997,57 @@ _#PesadãoFC #FutebolDeDomingo #FamiliaPesadão_`;
     };
   }
 
+  // Helper para obter dados de data/hora no fuso horário de Brasília (100% determinístico e à prova de falhas)
+  private getBrazilTimeInfo(date = new Date()) {
+    const dtf = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/Sao_Paulo',
+      hour12: false,
+      weekday: 'short',
+      hour: 'numeric',
+      minute: 'numeric',
+      second: 'numeric',
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric',
+    });
+    const parts = dtf.formatToParts(date);
+    const getPart = (type: string) => parts.find((p) => p.type === type)?.value || '';
+
+    const weekdayMap: Record<string, number> = {
+      Sun: 0,
+      Mon: 1,
+      Tue: 2,
+      Wed: 3,
+      Thu: 4,
+      Fri: 5,
+      Sat: 6,
+    };
+    const weekdayStr = getPart('weekday');
+    const brazilDay = weekdayMap[weekdayStr] ?? date.getDay();
+    const hour = parseInt(getPart('hour'), 10) || 0;
+    const minute = parseInt(getPart('minute'), 10) || 0;
+    const second = parseInt(getPart('second'), 10) || 0;
+    const year = parseInt(getPart('year'), 10) || date.getFullYear();
+    const month = parseInt(getPart('month'), 10) || date.getMonth() + 1;
+    const day = parseInt(getPart('day'), 10) || date.getDate();
+
+    const timeStr = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
+    const currentMins = hour * 60 + minute;
+    const dateStr = `${day.toString().padStart(2, '0')}/${month.toString().padStart(2, '0')}/${year}`;
+
+    return { brazilDay, hour, minute, second, currentMins, timeStr, dateStr, year, month, day };
+  }
+
   // Enfileira disparos automáticos programados da semana atual que já passaram do horário
-  public async enqueueDueSchedules(): Promise<number> {
+  public async enqueueDueSchedules(forceAll = false): Promise<number> {
     const config = await getWhatsAppConfig();
-    if (!config.isActive || !config.groupId) {
-      console.log('[WhatsAppService] Automação inativa ou sem grupo configurado.');
+    if (!config.groupId) {
+      console.log('[WhatsAppService] Nenhum grupo de WhatsApp configurado para os agendamentos.');
       return 0;
     }
 
-    const nowInBrazil = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
-    const currentDayOfWeek = nowInBrazil.getDay(); // 0 (Domingo) a 6 (Sábado)
-    
+    const { brazilDay, currentMins } = this.getBrazilTimeInfo();
+
     const schedules = (config.schedules && config.schedules.length > 0)
       ? config.schedules
       : [
@@ -981,34 +1065,35 @@ _#PesadãoFC #FutebolDeDomingo #FamiliaPesadão_`;
     const baseWeek = this.getCurrentReferenceWeek();
 
     for (const sched of schedules) {
-      if (!sched.enabled) continue;
-
-      // Calcular a data correspondente a este dia da semana na semana atual
-      const targetDate = new Date(nowInBrazil);
-      const diff = sched.dayOfWeek - currentDayOfWeek;
-      targetDate.setDate(nowInBrazil.getDate() + diff);
+      if (!sched.enabled && !forceAll) continue;
 
       const [targetHour, targetMinute] = (sched.sendTime || '09:00').split(':').map(Number);
-      targetDate.setHours(targetHour, targetMinute, 0, 0);
+      const targetMins = (targetHour || 0) * 60 + (targetMinute || 0);
 
-      // Se o horário agendado para esta semana já passou (ou é agora)
-      if (targetDate <= nowInBrazil) {
+      // O disparo é devido se forceAll for true OU (hoje é o dia do disparo e o horário já chegou)
+      const isDue = forceAll || (brazilDay === sched.dayOfWeek && currentMins >= targetMins);
+
+      if (isDue) {
         const refWeek = `${baseWeek}_slot${sched.id}`;
-        const executionKey = `billing_weekly_${config.groupId}_${refWeek}`;
+        const alreadySent = !forceAll && await hasMessageBeenSentThisWeek(config.groupId, refWeek);
 
-        // Gerar a mensagem formatada para este slot
-        const formattedMessage = await this.generateFormattedMessage(sched.messageTemplate);
+        if (!alreadySent) {
+          const executionKey = forceAll
+            ? `billing_force_${config.groupId}_${refWeek}_${Date.now()}`
+            : `billing_weekly_${config.groupId}_${refWeek}`;
 
-        const res = await enqueueMessage({
-          tipo: 'billing',
-          destino: config.groupId,
-          mensagem: formattedMessage,
-          scheduledAt: targetDate.toISOString(),
-          executionKey: executionKey
-        });
+          const formattedMessage = await this.generateFormattedMessage(sched.messageTemplate);
 
-        if (res.success) {
-          enqueuedCount++;
+          const res = await enqueueMessage({
+            tipo: 'billing',
+            destino: config.groupId,
+            mensagem: formattedMessage,
+            executionKey: executionKey,
+          });
+
+          if (res.success) {
+            enqueuedCount++;
+          }
         }
       }
     }
@@ -1031,7 +1116,10 @@ _#PesadãoFC #FutebolDeDomingo #FamiliaPesadão_`;
         return { success: true, processed: 0, failures: 0 };
       }
 
-      console.log(`[WhatsAppService] Processando ${pendingMessages.length} mensagens na fila.`);
+      const config = await getWhatsAppConfig();
+      const provider = config.provider || 'baileys';
+
+      console.log(`[WhatsAppService] Processando ${pendingMessages.length} mensagens na fila de envio.`);
       let processed = 0;
       let failures = 0;
 
@@ -1043,104 +1131,51 @@ _#PesadãoFC #FutebolDeDomingo #FamiliaPesadão_`;
           continue;
         }
 
-        // Garantir conexão com o WhatsApp
-        if (!this.sock || this.status !== 'connected') {
-          console.log('[WhatsAppService] WhatsApp desconectado. Verificando se existe sessão autenticada...');
-          const supabase = getAdminSupabase();
-          let hasAuth = false;
-          if (supabase) {
-            try {
-              const { hasSavedAuth } = await useSupabaseAuthState(supabase);
-              hasAuth = await hasSavedAuth();
-            } catch (e) {}
-          }
-
-          if (!hasAuth) {
-            console.log('[WhatsAppService] Nenhuma sessão autenticada encontrada. Mensagem aguardará login do usuário.');
-            // Desbloquear a mensagem para quando o usuário conectar
-            await updateQueueMessageStatus(item.id, 'pending', {
-              error: 'Aguardando conexão do WhatsApp pelo usuário.',
-              attempts: item.attempts || 0
-            });
-            break;
-          }
-
-          console.log('[WhatsAppService] WhatsApp desconectado. Tentando reconectar para processamento da fila...');
-          const connected = await this.ensureConnected(15000);
-          if (!connected) {
-            console.error('[WhatsAppService] Falha ao garantir conexão com o WhatsApp para envio da fila.');
-            await updateQueueMessageStatus(item.id, 'failed', {
-              error: 'WhatsApp desconectado no momento do envio.',
-              attempts: (item.attempts || 0) + 1
-            });
-            failures++;
-            continue;
-          }
-        }
-
         try {
-          // Enviar a mensagem com JID normalizado (@g.us ou @s.whatsapp.net)
+          if (!this.sock || this.status !== 'connected') {
+            console.log('[WhatsAppService] WhatsApp desconectado. Tentando restabelecer conexão...');
+            const connected = await this.ensureConnected(15000);
+            if (!connected) {
+              console.error('[WhatsAppService] Falha ao restabelecer conexão do WhatsApp para envio da fila.');
+              await updateQueueMessageStatus(item.id, 'failed', {
+                error: 'WhatsApp desconectado no momento do envio.',
+                attempts: (item.attempts || 0) + 1,
+              });
+              failures++;
+              continue;
+            }
+          }
+
           const targetJid = normalizeJid(item.destino);
           await this.sock.sendMessage(targetJid, { text: item.mensagem });
 
           // Atualizar status na fila para sent
           await updateQueueMessageStatus(item.id, 'sent', {
-            attempts: (item.attempts || 0) + 1
+            attempts: (item.attempts || 0) + 1,
           });
 
           // Registrar no log de mensagens
           await logWhatsAppMessage({
             groupId: item.destino,
-            groupName: 'Grupo WhatsApp',
+            groupName: item.destino.includes('@g.us') ? (config.matchGroupId === item.destino ? config.matchGroupName : config.groupName) || 'Grupo WhatsApp' : 'Contato WhatsApp',
             type: item.tipo === 'match_report' ? 'match_report' : item.tipo === 'test' ? 'test' : item.tipo === 'match_test' ? 'match_test' : 'auto',
             status: 'sent',
             referenceWeek: item.execution_key || this.getCurrentReferenceWeek(),
-            message: item.mensagem
+            message: item.mensagem,
           });
 
           processed++;
         } catch (err: any) {
-          console.error(`[WhatsAppService] Falha ao enviar mensagem da fila id ${item.id}:`, err);
-          
-          const errString = err ? `${err.message || ''} ${err.stack || ''} ${typeof err === 'object' ? JSON.stringify(err) : String(err)}` : '';
-          const isSendBadMAC = errString.toLowerCase().includes('bad mac') || 
-                               errString.toLowerCase().includes('failed to decrypt') ||
-                               errString.toLowerCase().includes('decryption') ||
-                               errString.toLowerCase().includes('bad_mac');
-
-          if (isSendBadMAC) {
-            console.warn('[WhatsAppService] Erro crítico de criptografia (Bad MAC) detectado durante envio. Reiniciando sessão...');
-            this.status = 'disconnected';
-            this.phoneNumber = null;
-            this.qrCodeDataUrl = null;
-            this.rawQr = null;
-            this.pairingInProgress = false;
-            this.reconnectInProgress = false;
-            this.reconnectAttempts = 0;
-            this.lastError = 'Erro de sincronização de chaves (Bad MAC). Por segurança, realize um novo pareamento.';
-            
-            // Limpar chaves corrompidas do banco de dados e memória de forma assíncrona
-            this.clearAuthFiles().catch(e => console.error('[WhatsAppService] Erro ao limpar auth pós Bad-MAC:', e));
-            updateWhatsAppSessionInDb(this.getSessionInfo()).catch(e => console.error('[WhatsAppService] Erro ao atualizar sessão pós Bad-MAC:', e));
-            addSystemLog('WHATSAPP_BAD_MAC', 'Sessão do WhatsApp reiniciada devido a erro de criptografia (Bad MAC) durante envio. É necessário parear novamente.', 'warn')
-              .catch(e => console.error('[WhatsAppService] Erro ao registrar log de Bad-MAC:', e));
-          }
+          console.error(`[WhatsAppService] Falha ao enviar mensagem da fila id ${item.id}:`, err?.message || err);
 
           const currentAttempts = (item.attempts || 0) + 1;
-          const nextStatus = isSendBadMAC ? 'failed' : (currentAttempts >= (item.max_attempts || 3) ? 'failed' : 'pending');
+          const nextStatus = currentAttempts >= (item.max_attempts || 3) ? 'failed' : 'pending';
 
           await updateQueueMessageStatus(item.id, nextStatus, {
-            error: isSendBadMAC 
-              ? 'Falha crítica de criptografia (Bad MAC). A sessão foi desconectada.'
-              : (err.message || 'Erro no envio via Baileys'),
-            attempts: currentAttempts
+            error: err.message || `Erro no envio via ${provider}`,
+            attempts: currentAttempts,
           });
           failures++;
-          
-          if (isSendBadMAC) {
-            // Interromper o processamento das próximas mensagens da fila, pois a sessão caiu
-            break;
-          }
         }
       }
 
@@ -1165,25 +1200,13 @@ _#PesadãoFC #FutebolDeDomingo #FamiliaPesadão_`;
   }
 
   // Checa e dispara agendamentos semanais ativos de forma resiliente
-  public async checkCronTrigger(): Promise<{ triggered: number; details: string[] }> {
+  public async checkCronTrigger(forceAll = false): Promise<{ triggered: number; details: string[] }> {
     const config = await getWhatsAppConfig();
-    if (!config.isActive || !config.groupId) {
-      return { triggered: 0, details: ['Automação inativa ou sem grupo configurado.'] };
+    if (!config.groupId) {
+      return { triggered: 0, details: ['Nenhum grupo de WhatsApp configurado para os envios.'] };
     }
 
-    // Obter data/hora atual no fuso horário de Brasília
-    const now = new Date();
-    const brazilTimeStr = now.toLocaleTimeString('pt-BR', {
-      timeZone: 'America/Sao_Paulo',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    });
-
-    // Dia da semana em SP (0 = Domingo, 1 = Segunda, ..., 6 = Sábado)
-    const brazilDay = new Date(now.toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' })).getDay();
-    const [currentHour, currentMinute] = brazilTimeStr.split(':').map(Number);
-    const currentMins = currentHour * 60 + currentMinute;
+    const { brazilDay, timeStr, currentMins } = this.getBrazilTimeInfo();
 
     const schedules = (config.schedules && config.schedules.length > 0)
       ? config.schedules
@@ -1203,32 +1226,41 @@ _#PesadãoFC #FutebolDeDomingo #FamiliaPesadão_`;
     const details: string[] = [];
 
     for (const sched of schedules) {
-      if (!sched.enabled) {
+      if (!sched.enabled && !forceAll) {
         details.push(`Slot #${sched.id} (${sched.title}): Desabilitado`);
         continue;
       }
 
       const [targetHour, targetMinute] = (sched.sendTime || '09:00').split(':').map(Number);
-      const targetMins = targetHour * 60 + targetMinute;
+      const targetMins = (targetHour || 0) * 60 + (targetMinute || 0);
 
-      // O disparo é devido se hoje é o dia da semana configurado e o horário atual já atingiu ou passou o horário marcado
-      const isDueToday = brazilDay === sched.dayOfWeek && currentMins >= targetMins;
+      // O disparo é devido se forceAll for true OU (hoje é o dia da semana configurado e o horário atual já atingiu ou passou o horário marcado)
+      const isDueToday = forceAll || (brazilDay === sched.dayOfWeek && currentMins >= targetMins);
 
       if (isDueToday) {
         const refWeek = `${baseWeek}_slot${sched.id}`;
-        const alreadySent = await hasMessageBeenSentThisWeek(config.groupId, refWeek);
+        const alreadySent = !forceAll && await hasMessageBeenSentThisWeek(config.groupId, refWeek);
 
         if (!alreadySent) {
-          console.log(`[WhatsAppService] [CRON_TRIGGER_DUE] Executando disparo programado (${sched.title || `Slot ${sched.id}`} - ${brazilTimeStr}) para grupo ${config.groupId}`);
-          await this.executeWeeklyBilling('auto', sched.messageTemplate, undefined, undefined, sched.id, sched.title);
+          console.log(`[WhatsAppService] [CRON_TRIGGER_DUE] Executando disparo programado (${sched.title || `Slot ${sched.id}`} - ${timeStr}) para grupo ${config.groupId}`);
+          await this.executeWeeklyBilling(
+            'auto',
+            sched.messageTemplate,
+            undefined,
+            undefined,
+            sched.id,
+            sched.title,
+            forceAll ? `billing_force_${config.groupId}_${refWeek}_${Date.now()}` : undefined,
+            true
+          );
           triggered++;
-          details.push(`Slot #${sched.id} (${sched.title}): Disparado agora às ${brazilTimeStr}`);
+          details.push(`Slot #${sched.id} (${sched.title}): Disparado com sucesso às ${timeStr}`);
         } else {
           details.push(`Slot #${sched.id} (${sched.title}): Já enviado esta semana (${refWeek})`);
         }
       } else {
         const dayNames = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
-        details.push(`Slot #${sched.id} (${sched.title}): Programado para ${dayNames[sched.dayOfWeek]} às ${sched.sendTime}`);
+        details.push(`Slot #${sched.id} (${sched.title}): Programado para ${dayNames[sched.dayOfWeek]} às ${sched.sendTime} (Hoje é ${dayNames[brazilDay]} às ${timeStr})`);
       }
     }
 

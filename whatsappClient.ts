@@ -249,9 +249,12 @@ export async function getWhatsAppStatus(): Promise<WhatsAppSessionInfo> {
   };
 }
 
-export async function connectWhatsApp(): Promise<WhatsAppSessionInfo> {
+export async function connectWhatsApp(force = false): Promise<WhatsAppSessionInfo> {
   try {
-    return await requestWhatsAppApi('/connect', { method: 'POST' }, 20000);
+    return await requestWhatsAppApi('/connect', { 
+      method: 'POST',
+      body: JSON.stringify({ force }),
+    }, 20000);
   } catch (err: any) {
     console.warn('[WhatsAppClient] Erro ao conectar:', err);
     throw new Error(err.message || 'Erro ao iniciar conexão com o WhatsApp. Tente novamente em instantes.');
@@ -266,13 +269,56 @@ export async function switchWhatsAppNumber(): Promise<WhatsAppSessionInfo> {
   return await requestWhatsAppApi('/switch-number', { method: 'POST' }, 15000);
 }
 
+export function getLocalCachedGroups(): WhatsAppGroup[] {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const raw = localStorage.getItem('pesadao_whatsapp_cached_groups');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    }
+  } catch (e) {}
+  return [];
+}
+
+export function saveLocalCachedGroups(groups: WhatsAppGroup[]) {
+  try {
+    if (typeof localStorage !== 'undefined' && Array.isArray(groups) && groups.length > 0) {
+      localStorage.setItem('pesadao_whatsapp_cached_groups', JSON.stringify(groups));
+    }
+  } catch (e) {}
+}
+
 export async function getWhatsAppGroups(): Promise<WhatsAppGroup[]> {
+  // 1. Tentar ler do backend Node.js
   try {
     const data = await requestWhatsAppApi('/groups', { method: 'GET' }, 10000);
-    return data.groups || [];
-  } catch (e) {
-    return [];
+    if (data && data.groups && data.groups.length > 0) {
+      saveLocalCachedGroups(data.groups);
+      return data.groups;
+    }
+  } catch (e) {}
+
+  // 2. Fallback direto no Supabase
+  const supabase = getSupabase();
+  if (supabase) {
+    try {
+      const { data } = await supabase
+        .from('whatsapp_auth')
+        .select('data')
+        .eq('id', 'cached_whatsapp_groups')
+        .maybeSingle();
+
+      if (data && data.data && Array.isArray(data.data) && data.data.length > 0) {
+        saveLocalCachedGroups(data.data);
+        return data.data;
+      }
+    } catch (err) {}
   }
+
+  // 3. Fallback no LocalStorage
+  return getLocalCachedGroups();
 }
 
 export async function getWhatsAppConfig(): Promise<WhatsAppConfig> {
@@ -320,6 +366,13 @@ export async function getWhatsAppConfig(): Promise<WhatsAppConfig> {
         const config: WhatsAppConfig = {
           id: data?.id || 1,
           isActive: data?.is_active ?? authBackupConfig?.isActive ?? false,
+          provider: authBackupConfig?.provider || (data?.provider as any) || getLocalConfigCache().provider || 'baileys',
+          zapiInstanceId: authBackupConfig?.zapiInstanceId || data?.zapi_instance_id || getLocalConfigCache().zapiInstanceId || '',
+          zapiToken: authBackupConfig?.zapiToken || data?.zapi_token || getLocalConfigCache().zapiToken || '',
+          zapiClientToken: authBackupConfig?.zapiClientToken || data?.zapi_client_token || getLocalConfigCache().zapiClientToken || '',
+          evolutionApiUrl: authBackupConfig?.evolutionApiUrl || data?.evolution_api_url || getLocalConfigCache().evolutionApiUrl || '',
+          evolutionApiKey: authBackupConfig?.evolutionApiKey || data?.evolution_api_key || getLocalConfigCache().evolutionApiKey || '',
+          evolutionInstance: authBackupConfig?.evolutionInstance || data?.evolution_instance || getLocalConfigCache().evolutionInstance || '',
           groupId: data?.group_id ?? authBackupConfig?.groupId ?? '',
           groupName: data?.group_name ?? authBackupConfig?.groupName ?? '',
           dayOfWeek: schedules[0]?.dayOfWeek ?? data?.day_of_week ?? 1,
@@ -841,6 +894,22 @@ export async function getWhatsAppHistory(limit = 50): Promise<WhatsAppMessageLog
   return [];
 }
 
+export async function triggerWhatsAppCronTick(force = false): Promise<any> {
+  const query = force ? '?force=true' : '';
+  try {
+    return await requestWhatsAppApi(`/cron-tick${query}`, { method: 'GET' }, 20000);
+  } catch (err: any) {
+    // Tentar rota alternativa /api/cron se houver
+    try {
+      const base = getBackendUrl() || '';
+      const url = `${base.replace(/\/$/, '')}/api/cron${query}`;
+      const res = await fetch(url);
+      if (res.ok) return await res.json();
+    } catch (e) {}
+    throw err;
+  }
+}
+
 export async function getWhatsAppLogs(limit = 100): Promise<WhatsAppSystemLog[]> {
   try {
     const data = await requestWhatsAppApi(`/logs?limit=${limit}`, { method: 'GET' }, 5000);
@@ -869,3 +938,4 @@ export async function getWhatsAppLogs(limit = 100): Promise<WhatsAppSystemLog[]>
   }
   return [];
 }
+

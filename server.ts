@@ -37,12 +37,16 @@ async function startServer() {
   // Webhook Tick para Cron-Job.org / UptimeRobot / Render Keep-Alive (GET e POST)
   const handleCronTick = async (req: express.Request, res: express.Response) => {
     try {
-      console.log('[WebhookCron] Recebido sinal de keep-alive e processamento de agendamentos...');
+      const isForce = req.query.force === 'true' || req.body?.force === true;
+      console.log(`[WebhookCron] Recebido sinal de cron/keep-alive (force: ${isForce})...`);
       
-      // 1. Verificar e disparar agendamentos semanais ativos devidos
-      const scheduleResult = await whatsappService.checkCronTrigger();
+      // 1. Verificar e enfileirar agendamentos semanais devidos
+      const enqueuedCount = await whatsappService.enqueueDueSchedules(isForce);
+
+      // 2. Verificar e disparar agendamentos semanais ativos devidos
+      const scheduleResult = await whatsappService.checkCronTrigger(isForce);
       
-      // 2. Processar mensagens pendentes na fila
+      // 3. Processar mensagens pendentes na fila (envio real via Baileys)
       const queueResult = await whatsappService.processPendingQueue();
 
       const session = whatsappService.getSessionInfo();
@@ -55,6 +59,7 @@ async function startServer() {
         brazilDateTime: `${brazilDate} ${brazilTime}`,
         sessionStatus: session.status,
         phoneNumber: session.phoneNumber,
+        enqueuedSchedules: enqueuedCount,
         triggeredSchedules: scheduleResult.triggered,
         scheduleDetails: scheduleResult.details,
         queueProcessed: queueResult.processed,
@@ -69,39 +74,20 @@ async function startServer() {
 
   app.get('/api/whatsapp/cron-tick', handleCronTick);
   app.post('/api/whatsapp/cron-tick', handleCronTick);
+  app.get('/api/whatsapp/force-cron', (req, res) => {
+    req.query.force = 'true';
+    return handleCronTick(req, res);
+  });
+  app.post('/api/whatsapp/force-cron', (req, res) => {
+    req.query.force = 'true';
+    return handleCronTick(req, res);
+  });
   app.get('/api/cron', handleCronTick);
   app.post('/api/cron', handleCronTick);
 
-  // Endpoint seguro para o cron-job.org chamar
-  app.post('/api/automation/run', async (req, res) => {
-    try {
-      const authHeader = req.headers.authorization;
-      const secret = process.env.AUTOMATION_SECRET || 'pesadao-secret-token-123';
-      
-      if (!authHeader || authHeader !== `Bearer ${secret}`) {
-        res.status(401).json({ error: 'Não autorizado. Token secreto incorreto ou ausente.' });
-        return;
-      }
-
-      console.log('[Automation] Executando rotina de automação disparada pelo Cron...');
-      
-      // 1. Enfileirar cobranças pendentes da semana atual (se houver)
-      const enqueued = await whatsappService.enqueueDueSchedules();
-      
-      // 2. Processar mensagens da fila (enviar pendentes/falhas)
-      const queueResult = await whatsappService.processPendingQueue();
-
-      res.json({
-        success: true,
-        enqueued,
-        processed: queueResult.processed,
-        failures: queueResult.failures,
-        timestamp: new Date().toISOString()
-      });
-    } catch (err: any) {
-      console.error('[Automation] Erro na rota de automação:', err);
-      res.status(500).json({ error: err.message });
-    }
+  // Endpoint flexível para cron-job.org / Render
+  app.all('/api/automation/run', async (req, res) => {
+    return handleCronTick(req, res);
   });
 
   // Keepalive route for external ping services (UptimeRobot)
@@ -110,15 +96,20 @@ async function startServer() {
   });
 
   // Obter status da conexão do WhatsApp
-  app.get('/api/whatsapp/status', (req, res) => {
-    const session = whatsappService.getSessionInfo();
-    res.json(session);
+  app.get('/api/whatsapp/status', async (req, res) => {
+    try {
+      const session = await whatsappService.getEffectiveSessionInfo();
+      res.json(session);
+    } catch (err: any) {
+      res.json(whatsappService.getSessionInfo());
+    }
   });
 
   // Conectar / Gerar novo QR Code
   app.post('/api/whatsapp/connect', async (req, res) => {
     try {
-      const session = await whatsappService.connect();
+      const force = Boolean(req.body?.force || req.query?.force === 'true');
+      const session = await whatsappService.connect(force);
       res.json(session);
     } catch (err: any) {
       res.status(500).json({ error: err.message });

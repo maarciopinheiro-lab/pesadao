@@ -52,22 +52,12 @@ export const useSupabaseAuthState = async (
     }
   };
 
-  const removeData = async (id: string) => {
-    try {
-      memCache.delete(id);
-      await supabase.from('whatsapp_auth').delete().eq('id', id);
-    } catch (error) {
-      console.error(`[WhatsAppAuth] Erro removendo chave ${id} do Supabase:`, error);
-    }
-  };
-  
   const clearState = async () => {
     try {
       memCache.clear();
       const { data } = await supabase.from('whatsapp_auth').select('id');
       if (data && data.length > 0) {
-        const ids = data.map(r => r.id);
-        // Batch delete in chunks of 50
+        const ids = data.map((r: any) => r.id);
         for (let i = 0; i < ids.length; i += 50) {
           const chunk = ids.slice(i, i + 50);
           await supabase.from('whatsapp_auth').delete().in('id', chunk);
@@ -79,8 +69,14 @@ export const useSupabaseAuthState = async (
     }
   };
 
-  const credsData = await readData('creds');
-  const creds: AuthenticationCreds = credsData || initAuthCreds();
+  let creds: AuthenticationCreds;
+  const savedCreds = await readData('creds');
+  if (savedCreds && savedCreds.noiseKey) {
+    creds = savedCreds;
+  } else {
+    creds = initAuthCreds();
+    await writeData(creds, 'creds');
+  }
 
   const hasSavedAuth = async (): Promise<boolean> => {
     const currentCreds = await readData('creds');
@@ -166,7 +162,6 @@ export const useSupabaseAuthState = async (
             }
           }
 
-          // Gravar em lotes de 50 para máxima velocidade e sem timeouts
           if (toUpsert.length > 0) {
             for (let i = 0; i < toUpsert.length; i += 50) {
               const chunk = toUpsert.slice(i, i + 50);
@@ -204,4 +199,3 @@ export const useSupabaseAuthState = async (
     hasSavedAuth
   };
 };
-

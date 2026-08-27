@@ -15,6 +15,8 @@ import {
   sendTestMessage,
   sendMatchTestWhatsAppMessage,
   switchWhatsAppNumber,
+  triggerWhatsAppCronTick,
+  getBackendUrl,
 } from './whatsappClient';
 
 interface WhatsAppTabProps {
@@ -233,10 +235,11 @@ export const WhatsAppTab: React.FC<WhatsAppTabProps> = ({ players, selectedDate,
     loadInitialData();
   }, []);
 
-  // Polling for WhatsApp status while in connecting / qr_ready mode
+  // Polling adaptativo para WhatsApp status
   useEffect(() => {
     let interval: NodeJS.Timeout | null = null;
     if (isPolling) {
+      const pollRate = session.status === 'qr_ready' || session.status === 'connecting' || session.status === 'reconnecting' || session.status === 'pairing' ? 3000 : 8000;
       interval = setInterval(async () => {
         try {
           const s = await getWhatsAppStatus();
@@ -247,12 +250,12 @@ export const WhatsAppTab: React.FC<WhatsAppTabProps> = ({ players, selectedDate,
         } catch (e) {
           // ignore
         }
-      }, 3000);
+      }, pollRate);
     }
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, [isPolling, groups.length]);
+  }, [isPolling, groups.length, session.status]);
 
   const currentSchedules = useMemo(() => getEffectiveSchedules(config), [config.schedules, config.isActive, config.dayOfWeek, config.sendTime, config.messageTemplate]);
   
@@ -316,9 +319,8 @@ export const WhatsAppTab: React.FC<WhatsAppTabProps> = ({ players, selectedDate,
       if (h) setHistory(h);
       if (l) setLogs(l);
 
-      if (s && s.status === 'connected') {
-        loadGroups();
-      }
+      // Sempre carregar grupos conhecidos/cacheados na inicialização
+      loadGroups();
     } catch (err) {
       console.error('Erro ao carregar dados iniciais do WhatsApp:', err);
     }
@@ -328,7 +330,9 @@ export const WhatsAppTab: React.FC<WhatsAppTabProps> = ({ players, selectedDate,
     setLoadingGroups(true);
     try {
       const g = await getWhatsAppGroups();
-      setGroups(g);
+      if (g && g.length > 0) {
+        setGroups(g);
+      }
     } catch (err: any) {
       console.warn('Não foi possível carregar grupos:', err.message);
     } finally {
@@ -505,11 +509,15 @@ export const WhatsAppTab: React.FC<WhatsAppTabProps> = ({ players, selectedDate,
     }
   };
 
-  const handleConnect = async () => {
+  const handleConnect = async (force = false) => {
     try {
       showToast('Iniciando conexão do WhatsApp...', 'success');
-      const s = await connectWhatsApp();
+      const shouldForce = force || session.status === 'reconnecting' || session.status === 'error';
+      const s = await connectWhatsApp(shouldForce);
       setSession(s);
+      if (s.status === 'connected') {
+        loadGroups();
+      }
     } catch (err: any) {
       showToast(err.message, 'error');
     }
@@ -547,6 +555,9 @@ export const WhatsAppTab: React.FC<WhatsAppTabProps> = ({ players, selectedDate,
       setConfig(updated);
       showToast('Configurações salvas com sucesso!', 'success');
       refreshHistoryAndLogs();
+      // Recarregar grupos e status atualizados
+      loadGroups();
+      getWhatsAppStatus().then(setSession).catch(() => {});
     } catch (err: any) {
       showToast(err.message, 'error');
     } finally {
@@ -637,15 +648,14 @@ export const WhatsAppTab: React.FC<WhatsAppTabProps> = ({ players, selectedDate,
     }
   };
 
-  const handleRunCronTick = async () => {
+  const handleRunCronTick = async (force = false) => {
     setRunningCronTick(true);
     try {
-      const res = await fetch('/api/whatsapp/cron-tick');
-      const data = await res.json();
+      const data = await triggerWhatsAppCronTick(force);
       setCronTickResult(data);
       if (data.success) {
         showToast(
-          `Ciclo executado com sucesso! ${data.triggeredSchedules} disparo(s) efetuados, ${data.queueProcessed} mensagem(ns) enviada(s).`,
+          `Ciclo executado com sucesso! ${data.triggeredSchedules || 0} disparo(s) efetuados, ${data.queueProcessed || 0} mensagem(ns) enviada(s).`,
           'success'
         );
         await refreshHistoryAndLogs();
@@ -734,6 +744,7 @@ export const WhatsAppTab: React.FC<WhatsAppTabProps> = ({ players, selectedDate,
           <div>
             <div className="flex items-center gap-2 flex-wrap">
               <h2 className="text-xl font-bold">Automação WhatsApp</h2>
+
               {session.status === 'connected' && (
                 <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider bg-green-500/10 text-green-500 border border-green-500/20">
                   <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
@@ -809,7 +820,7 @@ export const WhatsAppTab: React.FC<WhatsAppTabProps> = ({ players, selectedDate,
           ) : (
             <div className="flex items-center gap-2 w-full lg:w-auto">
               <button
-                onClick={handleConnect}
+                onClick={() => handleConnect(false)}
                 disabled={session.status === 'connecting' || session.status === 'pairing'}
                 className="flex-1 lg:flex-none flex items-center justify-center gap-2 px-6 py-3 rounded-xl text-xs font-black uppercase tracking-wider bg-green-600 hover:bg-green-700 text-white shadow-lg shadow-green-600/20 active:scale-95 transition-all disabled:opacity-60 disabled:cursor-not-allowed disabled:scale-100"
               >
@@ -964,6 +975,10 @@ export const WhatsAppTab: React.FC<WhatsAppTabProps> = ({ players, selectedDate,
         </button>
       </div>
 
+
+
+
+
       {/* ========================================================================= */}
       {/* --- SUBTAB 1: CONFIGURAÇÃO DA COBRANÇA --- */}
       {/* ========================================================================= */}
@@ -1009,7 +1024,7 @@ export const WhatsAppTab: React.FC<WhatsAppTabProps> = ({ players, selectedDate,
                   <label className="text-[10px] font-black uppercase text-primary tracking-widest block">
                     Grupo Destino das Cobranças (Grupo 1)
                   </label>
-                  {session.status === 'connected' && (
+                  <div className="flex items-center gap-2">
                     <button
                       type="button"
                       onClick={loadGroups}
@@ -1019,57 +1034,72 @@ export const WhatsAppTab: React.FC<WhatsAppTabProps> = ({ players, selectedDate,
                       <span className={`material-icons-outlined text-xs ${loadingGroups ? 'animate-spin' : ''}`}>
                         sync
                       </span>
-                      Atualizar grupos
+                      {loadingGroups ? 'Buscando...' : 'Atualizar grupos'}
                     </button>
-                  )}
+                  </div>
                 </div>
 
-                {session.status !== 'connected' ? (
-                  <div className="p-4 rounded-2xl bg-yellow-500/10 border border-yellow-500/20 text-yellow-600 dark:text-yellow-400 text-xs flex items-center gap-2">
-                    <span className="material-icons-outlined text-base">info</span>
-                    Conecte o WhatsApp para listar e selecionar o grupo.
-                  </div>
-                ) : groups.length === 0 ? (
-                  <div className="space-y-2">
-                    <input
-                      type="text"
-                      placeholder="ID do grupo (ex: 120363...@g.us)"
-                      value={config.groupId}
-                      onChange={(e) => setConfig({ ...config, groupId: e.target.value })}
-                      className="w-full bg-gray-100 dark:bg-black/20 border-0 rounded-2xl p-4 text-sm font-bold"
-                    />
-                    <button onClick={loadGroups} className="text-xs text-primary font-bold hover:underline">
-                      Clique para buscar grupos no WhatsApp conectado
-                    </button>
-                  </div>
-                ) : (
-                  <div className="space-y-2">
+                {/* SELETOR PRINCIPAL DE GRUPO COM FALLBACK INTELIGENTE */}
+                <div className="space-y-2">
+                  {groups.length > 0 ? (
                     <select
-                      value={config.groupId}
-                      onChange={(e) => {
+                      value={config.groupId || ''}
+                      onChange={async (e) => {
                         const selected = groups.find((g) => g.id === e.target.value);
-                        setConfig({
+                        const updated = {
                           ...config,
                           groupId: e.target.value,
                           groupName: selected ? selected.name : config.groupName,
-                        });
+                        };
+                        setConfig(updated);
+                        try {
+                          await saveWhatsAppConfig(updated);
+                          showToast(`Grupo de cobrança sincronizado: ${selected ? selected.name : 'Atualizado'}`, 'success');
+                        } catch (err: any) {
+                          showToast('Erro ao sincronizar grupo: ' + err.message, 'error');
+                        }
                       }}
-                      className="w-full bg-gray-100 dark:bg-black/20 border-0 rounded-2xl p-4 text-sm font-bold appearance-none cursor-pointer focus:ring-2 focus:ring-primary/20"
+                      className="w-full bg-gray-100 dark:bg-black/20 border-0 rounded-2xl p-4 text-sm font-bold appearance-none cursor-pointer focus:ring-2 focus:ring-primary/20 text-gray-900 dark:text-white"
                     >
                       <option value="">-- Selecione o Grupo de Cobrança --</option>
+                      {/* Caso o grupo atual não esteja na lista retornada, mantém como opção */}
+                      {config.groupId && !groups.some((g) => g.id === config.groupId) && (
+                        <option value={config.groupId}>
+                          {config.groupName || 'Grupo Configurado'} ({config.groupId.slice(0, 15)}...) [Atual]
+                        </option>
+                      )}
                       {groups.map((g) => (
                         <option key={g.id} value={g.id}>
-                          {g.name} ({g.participantsCount} participantes)
+                          {g.name} {g.participantsCount ? `(${g.participantsCount} participantes)` : ''}
                         </option>
                       ))}
                     </select>
-                    {config.groupId && (
-                      <p className="text-[10px] text-muted-light font-mono px-1">
-                        ID: {config.groupId}
-                      </p>
-                    )}
-                  </div>
-                )}
+                  ) : (
+                    <div className="space-y-2">
+                      <input
+                        type="text"
+                        placeholder="ID do grupo (ex: 120363...@g.us) ou Nome"
+                        value={config.groupId || ''}
+                        onChange={(e) => setConfig({ ...config, groupId: e.target.value })}
+                        className="w-full bg-gray-100 dark:bg-black/20 border-0 rounded-2xl p-4 text-sm font-bold"
+                      />
+                    </div>
+                  )}
+
+                  {config.groupId && (
+                    <div className="flex items-center justify-between px-1 text-[11px] text-muted-light">
+                      <span className="font-mono truncate max-w-[280px]">ID: {config.groupId}</span>
+                      {config.groupName && <span className="font-bold text-gray-700 dark:text-gray-300 truncate">{config.groupName}</span>}
+                    </div>
+                  )}
+
+                  {session.status !== 'connected' && (
+                    <p className="text-[10px] text-yellow-600 dark:text-yellow-400 flex items-center gap-1 mt-1">
+                      <span className="material-icons-outlined text-xs">info</span>
+                      Você pode trocar e salvar o grupo a qualquer momento. Conecte o WhatsApp para atualizar a lista ao vivo.
+                    </p>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -1696,7 +1726,7 @@ export const WhatsAppTab: React.FC<WhatsAppTabProps> = ({ players, selectedDate,
                   <label className="text-[10px] font-black uppercase text-primary tracking-widest block">
                     Grupo Destino das Partidas (Grupo 2 - Status do Jogo)
                   </label>
-                  {session.status === 'connected' && (
+                  <div className="flex items-center gap-2">
                     <button
                       type="button"
                       onClick={loadGroups}
@@ -1706,57 +1736,72 @@ export const WhatsAppTab: React.FC<WhatsAppTabProps> = ({ players, selectedDate,
                       <span className={`material-icons-outlined text-xs ${loadingGroups ? 'animate-spin' : ''}`}>
                         sync
                       </span>
-                      Atualizar grupos
+                      {loadingGroups ? 'Buscando...' : 'Atualizar grupos'}
                     </button>
-                  )}
+                  </div>
                 </div>
 
-                {session.status !== 'connected' ? (
-                  <div className="p-4 rounded-2xl bg-yellow-500/10 border border-yellow-500/20 text-yellow-600 dark:text-yellow-400 text-xs flex items-center gap-2">
-                    <span className="material-icons-outlined text-base">info</span>
-                    Conecte o WhatsApp para selecionar o grupo de jogos.
-                  </div>
-                ) : groups.length === 0 ? (
-                  <div className="space-y-2">
-                    <input
-                      type="text"
-                      placeholder="ID do grupo de jogos (ex: 120363...@g.us)"
-                      value={config.matchGroupId || ''}
-                      onChange={(e) => setConfig({ ...config, matchGroupId: e.target.value })}
-                      className="w-full bg-gray-100 dark:bg-black/20 border-0 rounded-2xl p-4 text-sm font-bold"
-                    />
-                    <button onClick={loadGroups} className="text-xs text-primary font-bold hover:underline">
-                      Clique para buscar grupos no WhatsApp conectado
-                    </button>
-                  </div>
-                ) : (
-                  <div className="space-y-2">
+                {/* SELETOR PRINCIPAL DE GRUPO DAS PARTIDAS COM FALLBACK INTELIGENTE */}
+                <div className="space-y-2">
+                  {groups.length > 0 ? (
                     <select
                       value={config.matchGroupId || ''}
-                      onChange={(e) => {
+                      onChange={async (e) => {
                         const selected = groups.find((g) => g.id === e.target.value);
-                        setConfig({
+                        const updated = {
                           ...config,
                           matchGroupId: e.target.value,
                           matchGroupName: selected ? selected.name : config.matchGroupName,
-                        });
+                        };
+                        setConfig(updated);
+                        try {
+                          await saveWhatsAppConfig(updated);
+                          showToast(`Grupo de partidas sincronizado: ${selected ? selected.name : 'Atualizado'}`, 'success');
+                        } catch (err: any) {
+                          showToast('Erro ao sincronizar grupo: ' + err.message, 'error');
+                        }
                       }}
-                      className="w-full bg-gray-100 dark:bg-black/20 border-0 rounded-2xl p-4 text-sm font-bold appearance-none cursor-pointer focus:ring-2 focus:ring-primary/20"
+                      className="w-full bg-gray-100 dark:bg-black/20 border-0 rounded-2xl p-4 text-sm font-bold appearance-none cursor-pointer focus:ring-2 focus:ring-primary/20 text-gray-900 dark:text-white"
                     >
                       <option value="">-- Selecione o Grupo das Partidas --</option>
+                      {/* Caso o grupo atual não esteja na lista retornada, mantém como opção */}
+                      {config.matchGroupId && !groups.some((g) => g.id === config.matchGroupId) && (
+                        <option value={config.matchGroupId}>
+                          {config.matchGroupName || 'Grupo das Partidas'} ({config.matchGroupId.slice(0, 15)}...) [Atual]
+                        </option>
+                      )}
                       {groups.map((g) => (
                         <option key={g.id} value={g.id}>
-                          {g.name} ({g.participantsCount} participantes)
+                          {g.name} {g.participantsCount ? `(${g.participantsCount} participantes)` : ''}
                         </option>
                       ))}
                     </select>
-                    {config.matchGroupId && (
-                      <p className="text-[10px] text-muted-light font-mono px-1">
-                        ID: {config.matchGroupId}
-                      </p>
-                    )}
-                  </div>
-                )}
+                  ) : (
+                    <div className="space-y-2">
+                      <input
+                        type="text"
+                        placeholder="ID do grupo de jogos (ex: 120363...@g.us) ou Nome"
+                        value={config.matchGroupId || ''}
+                        onChange={(e) => setConfig({ ...config, matchGroupId: e.target.value })}
+                        className="w-full bg-gray-100 dark:bg-black/20 border-0 rounded-2xl p-4 text-sm font-bold"
+                      />
+                    </div>
+                  )}
+
+                  {config.matchGroupId && (
+                    <div className="flex items-center justify-between px-1 text-[11px] text-muted-light">
+                      <span className="font-mono truncate max-w-[280px]">ID: {config.matchGroupId}</span>
+                      {config.matchGroupName && <span className="font-bold text-gray-700 dark:text-gray-300 truncate">{config.matchGroupName}</span>}
+                    </div>
+                  )}
+
+                  {session.status !== 'connected' && (
+                    <p className="text-[10px] text-yellow-600 dark:text-yellow-400 flex items-center gap-1 mt-1">
+                      <span className="material-icons-outlined text-xs">info</span>
+                      Você pode trocar e salvar o grupo a qualquer momento. Conecte o WhatsApp para atualizar a lista ao vivo.
+                    </p>
+                  )}
+                </div>
 
                 <div className="p-3 rounded-2xl bg-gray-100 dark:bg-black/20 text-xs text-muted-light flex items-center gap-2">
                   <span className="material-icons-outlined text-sm text-primary">alt_route</span>
@@ -1958,19 +2003,37 @@ export const WhatsAppTab: React.FC<WhatsAppTabProps> = ({ players, selectedDate,
                 </p>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <button
                   type="button"
-                  onClick={handleRunCronTick}
+                  onClick={() => handleRunCronTick(false)}
                   disabled={runningCronTick}
                   className="px-4 py-2.5 bg-primary hover:bg-primary-hover text-white text-xs font-black uppercase tracking-wider rounded-xl transition-all shadow-lg shadow-primary/20 flex items-center gap-2"
+                  title="Verifica se hoje e neste horário há algum disparo ativo agendado e processa a fila"
                 >
                   {runningCronTick ? (
                     <span className="animate-spin border-2 border-white/20 border-t-white rounded-full w-4 h-4"></span>
                   ) : (
                     <>
-                      <span className="material-icons-outlined text-sm">play_arrow</span>
-                      Testar Ciclo Agora
+                      <span className="material-icons-outlined text-sm">alarm_on</span>
+                      Verificar e Executar Devidos
+                    </>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleRunCronTick(true)}
+                  disabled={runningCronTick}
+                  className="px-4 py-2.5 bg-amber-500 hover:bg-amber-600 text-white text-xs font-black uppercase tracking-wider rounded-xl transition-all shadow-lg shadow-amber-500/20 flex items-center gap-2"
+                  title="Força o disparo imediato de todos os slots ativos no grupo para teste sem esperar pelo horário"
+                >
+                  {runningCronTick ? (
+                    <span className="animate-spin border-2 border-white/20 border-t-white rounded-full w-4 h-4"></span>
+                  ) : (
+                    <>
+                      <span className="material-icons-outlined text-sm">send</span>
+                      Forçar Disparo dos Ativos (Teste)
                     </>
                   )}
                 </button>
@@ -2068,13 +2131,27 @@ export const WhatsAppTab: React.FC<WhatsAppTabProps> = ({ players, selectedDate,
                 <input
                   type="text"
                   readOnly
-                  value={typeof window !== 'undefined' ? `${window.location.origin}/api/whatsapp/cron-tick` : '/api/whatsapp/cron-tick'}
+                  value={(() => {
+                    const customBackend = getBackendUrl();
+                    if (customBackend) {
+                      return `${customBackend.replace(/\/$/, '')}/api/whatsapp/cron-tick`;
+                    }
+                    if (typeof window !== 'undefined') {
+                      return `${window.location.origin}/api/whatsapp/cron-tick`;
+                    }
+                    return '/api/whatsapp/cron-tick';
+                  })()}
                   className="flex-1 bg-gray-50 dark:bg-black/40 border border-gray-200 dark:border-gray-700 rounded-xl p-3 font-mono text-xs text-gray-800 dark:text-gray-200 outline-none"
                 />
                 <button
                   type="button"
                   onClick={() => {
-                    const url = typeof window !== 'undefined' ? `${window.location.origin}/api/whatsapp/cron-tick` : '/api/whatsapp/cron-tick';
+                    const customBackend = getBackendUrl();
+                    const url = customBackend
+                      ? `${customBackend.replace(/\/$/, '')}/api/whatsapp/cron-tick`
+                      : typeof window !== 'undefined'
+                      ? `${window.location.origin}/api/whatsapp/cron-tick`
+                      : '/api/whatsapp/cron-tick';
                     navigator.clipboard.writeText(url);
                     showToast('URL do Webhook copiada para a área de transferência!', 'success');
                   }}

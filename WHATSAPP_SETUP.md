@@ -1,20 +1,37 @@
 # 🤖 GUIA DE AUTOMAÇÃO DO WHATSAPP — APP PESADÃO
 
-Este documento contém todas as orientações para utilizar a automação do WhatsApp do **APP Pesadão** para envio de cobranças semanais de mensalidade no grupo do time.
+Este documento contém todas as orientações para utilizar a automação do WhatsApp do **APP Pesadão** para envio de cobranças semanais de mensalidade e relatórios pós-jogo no grupo do time.
 
 ---
 
-## 🚀 1. Como Conectar o WhatsApp
+## 👑 1. Integração Oficial / Z-API (100% Estável em Nuvem - Recomendado)
 
-1. Abra o **APP Pesadão** e clique na aba **WhatsApp** (no topo no computador ou na barra inferior no celular).
-2. Clique no botão verde **"Conectar WhatsApp"**.
-3. Um **QR Code** será exibido na tela.
-4. No seu celular onde está o WhatsApp do time:
-   - Abra o WhatsApp.
-   - Acesse **Configurações** (ou menu de 3 pontinhos) &rarr; **Aparelhos conectados**.
-   - Toque em **"Conectar um aparelho"**.
-   - Aponte a câmera para o QR Code na tela do app.
-5. Em poucos segundos o status mudará para 🟢 **Conectado** e exibirá o número do aparelho.
+Para garantir que a automação **nunca caia** e não dependa de servidor local ligado 24h:
+
+1. Acesse [z-api.io](https://z-api.io) e crie sua conta.
+2. Crie uma nova instância no painel da Z-API.
+3. Escaneie o QR Code no painel da Z-API com o WhatsApp do time (apenas uma única vez).
+4. No **APP Pesadão &rarr; WhatsApp &rarr; API Oficial / Z-API**:
+   - Selecione **Z-API (Oficial / Nuvem)**.
+   - Preencha o **ID da Instância** e o **Token da Instância**.
+   - Clique em **"Testar Conexão Z-API"**.
+   - Clique em **"Salvar Credenciais"**.
+5. Pronto! Todas as mensagens de cobrança e relatórios pós-jogo serão despachadas de forma 100% estável.
+
+---
+
+## 📱 2. Conexão Gratuita por QR Code (Baileys)
+
+Caso prefira utilizar a conexão direta gratuita:
+
+1. Abra o **APP Pesadão** e clique na aba **WhatsApp**.
+2. Na aba **API Oficial / Z-API**, selecione **QR Code Direto (Baileys)**.
+3. Clique no botão verde **"Conectar WhatsApp"**.
+4. Um **QR Code** será exibido na tela.
+5. No celular do time:
+   - Abra o WhatsApp &rarr; **Aparelhos conectados** &rarr; **Conectar um aparelho**.
+   - Aponte a câmera para o QR Code.
+6. Em poucos segundos o status mudará para 🟢 **Conectado**.
 
 ---
 

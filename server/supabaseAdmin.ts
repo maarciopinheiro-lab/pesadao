@@ -7,7 +7,7 @@ if (typeof globalThis.WebSocket === 'undefined') {
 }
 
 export const SUPABASE_URL = process.env.SUPABASE_URL || 'https://udtjrhyblktpnbaynchw.supabase.co';
-export const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVkdGpyaHlibGt0cG5iYXluY2h3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ5MzEwMTEsImV4cCI6MjA4MDUwNzAxMX0.QgHFP-qaD_cZ_euwV41nxXsAwUpxjvg0QsWj43d0Qt8';
+export const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVkdGpyaHlibGt0cG5iYXluY2h3Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2NDkzMTAxMSwiZXhwIjoyMDgwNTA3MDExfQ.zmfa5JeymqWkoOndhFw_7SOruzlFXw6rv76PKO88UUY';
 
 let supabaseClient: SupabaseClient | null = null;
 
@@ -269,6 +269,13 @@ export async function getWhatsAppConfig(): Promise<WhatsAppConfig> {
         inMemoryState.config = {
           id: data?.id || 1,
           isActive: data?.is_active ?? authBackupConfig?.isActive ?? false,
+          provider: authBackupConfig?.provider || (data?.provider as any) || inMemoryState.config.provider || 'baileys',
+          zapiInstanceId: authBackupConfig?.zapiInstanceId || data?.zapi_instance_id || inMemoryState.config.zapiInstanceId || '',
+          zapiToken: authBackupConfig?.zapiToken || data?.zapi_token || inMemoryState.config.zapiToken || '',
+          zapiClientToken: authBackupConfig?.zapiClientToken || data?.zapi_client_token || inMemoryState.config.zapiClientToken || '',
+          evolutionApiUrl: authBackupConfig?.evolutionApiUrl || data?.evolution_api_url || inMemoryState.config.evolutionApiUrl || '',
+          evolutionApiKey: authBackupConfig?.evolutionApiKey || data?.evolution_api_key || inMemoryState.config.evolutionApiKey || '',
+          evolutionInstance: authBackupConfig?.evolutionInstance || data?.evolution_instance || inMemoryState.config.evolutionInstance || '',
           groupId: data?.group_id ?? authBackupConfig?.groupId ?? '',
           groupName: data?.group_name ?? authBackupConfig?.groupName ?? '',
           dayOfWeek: schedules[0]?.dayOfWeek ?? data?.day_of_week ?? 1,
