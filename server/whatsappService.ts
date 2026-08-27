@@ -981,7 +981,15 @@ _#PesadãoFC #FutebolDeDomingo #FamiliaPesadão_`;
     }
 
     const baseWeek = this.getCurrentReferenceWeek();
-    const refWeek = scheduleId ? `${baseWeek}_slot${scheduleId}` : baseWeek;
+    let refWeek = baseWeek;
+    if (scheduleId) {
+      const sched = config.schedules?.find((s: any) => s.id === scheduleId);
+      if (sched) {
+        refWeek = `${baseWeek}_slot${scheduleId}_d${sched.dayOfWeek || 1}_t${(sched.sendTime || '09:00').replace(':', '')}`;
+      } else {
+        refWeek = `${baseWeek}_slot${scheduleId}`;
+      }
+    }
     const executionKey = idempotencyKey || (
       triggerType === 'auto'
         ? `billing_weekly_${config.groupId}_${refWeek}`
@@ -1099,7 +1107,7 @@ _#PesadãoFC #FutebolDeDomingo #FamiliaPesadão_`;
       const isDue = forceAll || (brazilDay === sched.dayOfWeek && currentMins >= targetMins);
 
       if (isDue) {
-        const refWeek = `${baseWeek}_slot${sched.id}`;
+        const refWeek = `${baseWeek}_slot${sched.id}_d${sched.dayOfWeek}_t${(sched.sendTime || '09:00').replace(':', '')}`;
         const alreadySent = !forceAll && await hasMessageBeenSentThisWeek(config.groupId, refWeek);
 
         if (!alreadySent) {
@@ -1272,7 +1280,7 @@ _#PesadãoFC #FutebolDeDomingo #FamiliaPesadão_`;
       const isDueToday = forceAll || (brazilDay === sched.dayOfWeek && currentMins >= targetMins);
 
       if (isDueToday) {
-        const refWeek = `${baseWeek}_slot${sched.id}`;
+        const refWeek = `${baseWeek}_slot${sched.id}_d${sched.dayOfWeek}_t${(sched.sendTime || '09:00').replace(':', '')}`;
         const alreadySent = !forceAll && await hasMessageBeenSentThisWeek(config.groupId, refWeek);
 
         if (!alreadySent) {
